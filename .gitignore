@@ -1,0 +1,16 @@
+# installed with `npm install`
+node_modules/
+
+# your models and the editor's own settings stay on your computer
+Library/
+.settings.json
+
+# builds (publish the exe as a GitHub Release instead)
+dist/
+dist-*/
+SimpleGLBEditor.exe
+*.blockmap
+
+# local tooling / logs
+.claude/settings.local.json
+*.log

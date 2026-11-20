@@ -1,0 +1,24 @@
+{
+  "id": "claude-code",
+  "name": "Claude",
+  "program": "Claude Code",
+  "icon": "🤖",
+  "description": "Claude Code by Anthropic: chat with Claude inside the editor. It works on your models in its own tab through the editor's MCP server.",
+  "find": { "commands": ["claude"], "paths": ["~/.local/bin/claude.exe"] },
+  "install": { "command": "irm https://claude.ai/install.ps1 | iex", "shell": "PowerShell", "url": "https://claude.com/claude-code" },
+  "chat": { "args": ["--append-system-prompt", "{panelNote}"] },
+  "version": { "args": ["--version"] },
+  "env": { "GLB_SESSION_NAME": "In-app Claude" },
+  "dropEnv": ["^CLAUDECODE$", "^CLAUDE_CODE_"],
+  "status": {
+    "args": ["auth", "status", "--json"],
+    "json": { "loggedIn": "loggedIn", "method": "authMethod" },
+    "methods": { "claude.ai": "Claude subscription", "console": "Anthropic API (Console)", "api": "Anthropic API (Console)" }
+  },
+  "signIn": [
+    { "id": "claudeai", "label": "Sign in with Claude (Pro / Max subscription)…", "tip": "Sign in with your Claude account (Pro or Max subscription). Your browser opens the Claude sign-in page; the editor never sees your password.", "args": ["auth", "login", "--claudeai"], "intro": "Signing in with your Claude subscription (Pro / Max). Your browser opens; finish there." },
+    { "id": "api", "label": "Sign in with Anthropic API (Console, pay per token)…", "tip": "Sign in with an Anthropic Console account: Claude Code is then billed per token from your API credits. Your browser opens the sign-in page; the editor never sees a key.", "args": ["auth", "login", "--console"], "intro": "Signing in with an Anthropic Console account (pay per token from your API credits). Your browser opens; finish there." }
+  ],
+  "signOut": { "args": ["auth", "logout"], "confirm": "Sign Claude Code out on this computer? (It signs out the claude command everywhere, not only here.)" },
+  "panelNote": "You are running inside the Simple GLB Editor's built-in AI panel. The user answers your questions with buttons made from your text. Whenever you offer the user choices, put them at the very end of your message as a numbered list, one per line (\"1. ...\", \"2. ...\", \"3. ...\"), and always finish the list with one more numbered option: \"Something else - type what you want\". When you use the AskUserQuestion tool, keep it to short options as usual."
+}

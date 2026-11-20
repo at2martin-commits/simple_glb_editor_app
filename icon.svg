@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#DF734B"/><stop offset="65%" stop-color="#D4663F"/><stop offset="100%" stop-color="#BA522F"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.32"/><stop offset="50%" stop-color="#FFFFFF" stop-opacity="0"/><stop offset="100%" stop-color="#000000" stop-opacity="0.22"/>
+    </linearGradient>
+    <filter id="sh" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#5E2310" flood-opacity="0.28"/></filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" ry="112" fill="url(#bg)"/>
+  <rect x="17" y="17" width="478" height="478" rx="111" ry="111" fill="none" stroke="url(#rim)" stroke-width="2.5"/>
+  <g filter="url(#sh)" stroke="#F5F3EC" stroke-width="22" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- stick figure, one arm waving -->
+    <circle cx="256" cy="128" r="40" fill="#F5F3EC" stroke="none"/>
+    <path d="M256 180 L256 300"/>
+    <path d="M256 210 L186 262 L150 318"/>
+    <path d="M256 210 L322 170 L360 108"/>
+    <path d="M256 300 L206 372 L196 430"/>
+    <path d="M256 300 L304 372 L318 430"/>
+  </g>
+  <g fill="#FFD9A8" stroke="none">
+    <circle cx="256" cy="210" r="13"/><circle cx="256" cy="300" r="13"/><circle cx="186" cy="262" r="11"/><circle cx="322" cy="170" r="11"/>
+    <circle cx="206" cy="372" r="11"/><circle cx="304" cy="372" r="11"/>
+  </g>
+</svg>

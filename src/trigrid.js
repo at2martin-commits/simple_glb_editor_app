@@ -5,9 +5,9 @@ import * as THREE from 'three';
 export class TriGrid {
   /**
    * tris: array of { A, B, C } (THREE.Vector3) plus any extra fields (e.g. a piece id); cells: boxes along the
-   * longest side (more = finer).
+   * longest side (more = finer; default grows with the triangle count, 16..96).
    */
-  constructor(tris, cells = 48) {
+  constructor(tris, cells = Math.min(96, Math.max(16, Math.round(Math.cbrt(tris.length) * 2)))) {
     this.tris = tris;
     const box = new THREE.Box3();
     for (const t of tris) box.expandByPoint(t.A).expandByPoint(t.B).expandByPoint(t.C);

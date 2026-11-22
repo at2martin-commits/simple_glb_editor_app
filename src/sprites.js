@@ -161,7 +161,7 @@ export async function renderSprites(ed, options = {}) {
     }
     o.onProgress?.(total, total);
     if (o.save) ed.dispatchEvent(new Event('library'));
-    const out = { front, png: sheets[0].png, json: sheets[0].json, sheets: sheets.map(({ canvas, json, ...s }) => s), frames: total, frameSize: [W, H], directions: axes.map(a => a.name), clips: clipNames, fps, ms: Math.round(performance.now() - t0) };
+    const out = { front, png: sheets[0].png, json: sheets[0].json, sheets: sheets.map(({ canvas, ...s }) => s), frames: total, frameSize: [W, H], directions: axes.map(a => a.name), clips: clipNames, fps, ms: Math.round(performance.now() - t0) };
     if (!o.save || options.keepCanvas) { out.sheetCanvases = sheets.map(s => s.canvas); out.sheetJsons = sheets.map(s => s.json); } // (the Sprite sheet window's preview)
     ed.msg(o.save ? `Sprite sheet: ${total} frames (${clipNames.length} animations × ${axes.length} directions) → Library/${sheets.map(s => s.png).join(', ')}` : `Sprite preview: ${total} frames`);
     return out;

@@ -62,7 +62,7 @@ export function initArrange({ settings, status, askText, onChange }) {
   document.addEventListener('click', e => {
     const b = e.target.closest('.um-btn');
     for (const m of document.querySelectorAll('.usermenu .menu')) if (!b || !m.parentElement.contains(b)) m.hidden = true;
-    if (b) { const list = b.parentElement.querySelector('.menu'); list.hidden = !list.hidden; return; }
+    if (b) { const list = b.parentElement.querySelector('.menu'); list.hidden = !list.hidden; }
   });
 
   // ---- arrange mode
@@ -80,7 +80,7 @@ export function initArrange({ settings, status, askText, onChange }) {
     if (e.target.id === 'arrDone') setOn(false);
     if (e.target.id === 'arrReset' && confirm('Put every button back where it was? Your menus are removed.')) {
       for (const m of [...document.querySelectorAll('.usermenu')]) { const list = m.querySelector('.menu'); for (const el of unitsIn(list)) m.parentElement.insertBefore(el, m); }
-      apply(defaults); tidy(); settings.set('toolbarLayout', null); onChange?.(); status('Buttons are back where they were');
+      apply(defaults); settings.set('toolbarLayout', null); onChange?.(); status('Buttons are back where they were');
     }
   });
 
@@ -142,7 +142,7 @@ export function initArrange({ settings, status, askText, onChange }) {
       const t = d.target.into;
       if (t.classList.contains('usermenu')) t.querySelector('.menu').appendChild(d.unit); // onto a menu button: into it
       else { // onto a plain button: a new menu holding both
-        const name = (await askText('Name for the new menu button (it holds both buttons):', 'Menu')) || null; if (!name) return;
+        const name = await askText('Name for the new menu button (it holds both buttons):', 'Menu'); if (!name) return;
         const mid = 'm' + Date.now().toString(36), m = makeMenu(mid, name);
         t.parentElement.insertBefore(m, t); m.querySelector('.menu').append(t, d.unit);
       }

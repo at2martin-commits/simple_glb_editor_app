@@ -11,7 +11,8 @@ import { initPaint } from './paint.js';
 import { initBuild, SHAPES } from './build.js';
 import { initWatch } from './watch.js';
 import { Tabs } from './tabs.js';
-import { initTerminal } from './terminal.js';
+import { initTerminal } from '../vendor/ai-panel/ai-panel.js'; // the shared AI panel (github.com/Marty-s-Stuff/ai-panel, tag in package.json)
+import { notify, away } from './notify.js';
 import { initArrange } from './arrange.js';
 
 const $ = s => document.querySelector(s);
@@ -46,7 +47,7 @@ function setupEditor(e) {
   initPaint(e); Object.assign(e.brush, settings.get('brush', {}));
   e.build = initBuild(e, { saved: () => library.refresh() });
   Object.assign(e.build, settings.get('build', {}));
-  initWatch(e); // keeps the read-only watch page (watch.html) up to date (only the tab you look at)
+  initWatch(e); // keeps the read-only watch page (watch.html) up to date (one feed per tab, only for tabs someone watches)
   e.setMouseButtons(mouse.rotate, mouse.pan);
   e.setTheme(isLight());
 }
@@ -122,7 +123,7 @@ const ACTIONS = [
   A('View', 'themeToggle', 'Switch light / dark', [], () => setTheme(isLight() ? 'dark' : 'light'), 'Switch between light and dark mode.'),
   A('View', 'arrangeButtons', 'Arrange the buttons…', [], () => arrange.toggle(), 'Move the toolbar buttons where you like them: drag a button to a new spot, drop it on the middle of another button to make a menu button holding both, double-click a menu button to rename it. Done saves; Reset to default puts everything back.'),
   A('View', 'notifyToggle', 'Notify me when Claude finishes', [], () => { const on = settings.get('notify', true) === false; settings.set('notify', on); status(on ? 'Notifications on: one comes when Claude finishes or asks something while you look elsewhere' : 'Notifications off'); }, 'A desktop notification when Claude finishes or asks you something while you are not looking at it (the editor in the background, the Claude panel hidden, or another tab picked).'),
-  A('View', 'claudeTerm', 'Claude Code terminal', ['Ctrl+`'], () => claude.toggle(), 'Show or hide the drop-down terminal where you chat with Claude Code inside the editor (sign in from the 🤖 Claude menu). Claude works on your models in its own tab.'),
+  A('View', 'claudeTerm', 'Claude Code terminal', ['Ctrl+`'], () => claude?.toggle(), 'Show or hide the drop-down terminal where you chat with Claude Code inside the editor (sign in from the 🤖 Claude menu). Claude works on your models in its own tab.'),
   A('Tabs', 'tabNew', 'New tab', ['Ctrl+T'], () => tabs.add(), 'Open a new empty tab next to the others. Every tab is its own project with its own undo; files you open always get their own tab.'),
   A('Tabs', 'takeOver', 'Take over this tab', [], () => { tabs.takeOver(tabs.active, !(tabs.active.session?.takenOver)); queueRender(); }, 'In a tab a Claude session is working in: edit it yourself (the session is told and stops changing it). Again = give it back.'),
   A('Tabs', 'subTab', 'Open the picked group in a sub-tab', ['Ctrl+Shift+T'], () => buildOnly(() => { const g = build.sel.map(id => build.node(id)).find(n => n?.kind === 'group') || build.sel.map(id => build.node(id)?.parent && build.node(build.node(id).parent)).find(Boolean); if (!g) return status('Pick a group (or a part inside one) first'); tabs.openSub(g.id); }), 'Work on one group (an arm, the head…) on its own in a sub-tab under this project: only it is shown and clickable (the rest greyed or hidden), with its own camera. Everything you do there is already in the project; Undo is shared.'),
@@ -229,36 +230,64 @@ const ACTIONS = [
   A('Windows', 'panelTools', 'Show / hide Tools window', [], () => panels.toggle('tools')),
   A('Windows', 'panelScene', 'Show / hide Scene window', [], () => panels.toggle('scene')),
   A('Windows', 'panelClips', 'Show / hide Animations window', [], () => panels.toggle('clips')),
-  A('View', 'watchPhone', 'Watch on my phone (QR code)…', [], () => openWatchPhone(), 'Shows a QR code: scan it with your phone camera to open the view-only watch page (the private key is inside the code). Bookmark it or add it to the home screen once and you never type it.'),
+  A('View', 'watchPhone', 'Watch from other devices…', [], () => openWatchPhone(), 'Let phones, tablets and other computers watch the view-only page: on your home Wi-Fi they just open the address; from outside your network they sign in with a password you set here.'),
   A('Windows', 'resetLayout', 'Put all windows back in place', [], () => panels.reset(), 'Docks every window back where it started.'),
   A('Help', 'help', 'Help', ['?', 'F1'], () => { $('#help').hidden = false; }),
   A('Help', 'keys', 'Keyboard shortcuts & mouse…', ['Ctrl+K'], () => keymap.open(), 'Change any shortcut, and choose which mouse button turns the view.'),
 ];
 function buildOnly(fn) { if (!inBuild()) return status('That works in Build mode (press 7)'); return fn(); }
 const keymap = new Keymap(ACTIONS, status);
-/** In a Claude session's tab (until you Take over) only looking around works: tabs, views, framing, windows. */
-const LOOK_ONLY = /^(tab|view|watch)|^(frame|help|keys|library|libraryMenu|takeOver)$/;
+/** In a Claude session's tab (until you Take over) only looking around works: tabs, views, framing, windows, theme, the Claude panel. */
+const LOOK_ONLY = /^(tab|view|watch|theme|panel)|^(frame|help|keys|library|libraryMenu|takeOver|resetLayout|arrangeButtons|notifyToggle|claudeTerm)$/;
 const allowed = id => { if (!ed.viewOnly || LOOK_ONLY.test(id)) return true; status('🤖 A Claude session is working in this tab — press Take over (in the bar above the view) to edit here'); return false; };
 keymap.allow = allowed;
+document.querySelectorAll('.toolbar [data-act]').forEach(b => b.classList.toggle('editonly', !LOOK_ONLY.test(b.dataset.act))); // greyed in a session's tab (styles.css body.viewonly)
 const arrange = initArrange({ settings, status, askText, onChange: () => keymap.decorate(document) }); // (View > Arrange the buttons…)
 tabs.showMenu = showCtxMenu;
 tabs.banner = $('#tabBanner'); tabs.applyViewOnly();
 const library = initLibrary({ editor: ed, panels, status, run, openTab: fn => tabs.openInNewTab(fn) });
 window.glbAction = id => (id === 'libRefresh' ? library.refresh() : run(() => keymap.run(id)));
-// ---------------- in-app Claude Code terminal ----------------
+// ---------------- the menu line (under the logo row): main.js menuTemplate, read fresh on each open so ticks are current ----------------
+if (window.glbApp?.menu) {
+  const names = $('#menuNames'); let open = null;
+  const item = it => it.type === 'separator' ? '<hr>' : it.submenu ? `<div class="menu-note">${esc(it.label)}</div><div class="msub">${it.submenu.map(item).join('')}</div>`
+    : `<button ${it.id ? `data-act="${it.id}"${LOOK_ONLY.test(it.id) ? '' : ' class="editonly"'}` : `data-mrun="${it.run}"${it.checked ? ' data-checked="1"' : ''}`}><span class="tick">${it.checked ? '✓' : ''}</span>${esc(it.label)}<kbd class="sc"></kbd></button>`;
+  const close = () => { if (!open) return; open.querySelector('.menu').hidden = true; open.querySelector('.mb-btn').classList.remove('open'); open = null; };
+  const show = async dd => {
+    close(); open = dd; const tpl = await window.glbApp.menu(), m = dd.querySelector('.menu');
+    m.innerHTML = tpl[+dd.dataset.i].submenu.map(item).join(''); keymap.decorate(m); m.hidden = false; dd.querySelector('.mb-btn').classList.add('open');
+  };
+  window.glbApp.menu().then(tpl => {
+    names.innerHTML = tpl.map((t, i) => `<div class="dropdown" data-i="${i}"><button class="mb-btn">${esc(t.label)}</button><div class="menu" hidden></div></div>`).join('');
+    for (const dd of names.children) {
+      dd.querySelector('.mb-btn').onclick = e => { e.stopPropagation(); open === dd ? close() : show(dd); };
+      dd.querySelector('.mb-btn').onmouseenter = () => { if (open && open !== dd) show(dd); }; // slide along the menu line like a desktop app
+      dd.querySelector('.menu').addEventListener('click', e => { const b = e.target.closest('button'); if (!b) return; if (b.dataset.mrun) window.glbApp.menuRun(b.dataset.mrun, !b.dataset.checked); close(); }); // (data-act items run through the click handler below)
+    }
+  });
+  document.addEventListener('pointerdown', e => { if (open && !e.target.closest('#menuNames .dropdown')) close(); }, true);
+  addEventListener('keydown', e => { if (e.key === 'Escape') close(); });
+}
+// ---------------- the AI panel (shared: vendor/ai-panel, copied from node_modules/ai-panel by scripts/vendor.js) ----------------
 let libRoot = ''; fetch('/api/lib/info').then(r => r.json()).then(j => { libRoot = j.root || ''; }).catch(() => {});
 // opening the Claude panel leaves only the 3D view: the other windows are hidden, and come back when it is hidden again
 const reopenAfterClaude = () => { const ids = settings.get('termHiddenPanels', []); settings.set('termHiddenPanels', []); for (const id of ids) if (panels.state[id] && !panels.isOpen(id) && !['sprites', 'cleanup'].includes(id)) panels.open(id); }; // (windows whose content is made when opened stay closed)
-const claude = initTerminal({ status, settings, workFolder: () => libRoot,
+let claude = null; // set once its markup has loaded; loading it must not hold up the rest of ui.js (the control endpoint calls glbActionIn as soon as glbAction exists)
+(async () => { // its markup: the 🤖 ▾ button goes at the end of the menu line, the panel at the end of the page
+  const tpl = document.createElement('template'); tpl.innerHTML = await (await fetch('/vendor/ai-panel/ai-panel.html')).text();
+  const [button, panel] = tpl.content.children; $('#aiPanelButton').replaceWith(button); $('#aiPanelHost').replaceWith(panel);
+  claude = initTerminal({ appName: 'Simple GLB Editor', status, settings, workFolder: () => libRoot, workFolderName: 'Library', workFolderIcon: '📚', notify, away,
   onShow: () => { const ids = Object.keys(panels.state).filter(id => panels.isOpen(id)); if (ids.length) { settings.set('termHiddenPanels', [...new Set([...settings.get('termHiddenPanels', []), ...ids])]); ids.forEach(id => panels.close(id)); } },
   onHide: reopenAfterClaude });
-reopenAfterClaude(); // (quit while the Claude panel was open: the windows come back)
-window.claudeTerm = claude;
-// where the Claude panel goes: drop-down under the toolbars; docked = from just under the Claude button to just above the status line
+  reopenAfterClaude(); // (quit while the Claude panel was open: the windows come back)
+  window.claudeTerm = claude;
+})().catch(e => status('⚠ The AI panel could not load: ' + e.message));
+// where the Claude panel goes: drop-down under the toolbars; docked = from the top of the 3D view to just above the status line
 const placeTerm = () => {
   const root = document.documentElement.style, px = v => Math.round(v) + 'px';
-  root.setProperty('--term-top', px(document.querySelector('.toolbar.second').getBoundingClientRect().bottom));
-  root.setProperty('--term-side-top', px(document.querySelector('.toolbar.second').getBoundingClientRect().bottom)); // level with the top of the 3D view
+  const below = px(document.querySelector('.toolbar.second').getBoundingClientRect().bottom);
+  root.setProperty('--term-top', below);
+  root.setProperty('--term-side-top', below); // level with the top of the 3D view
   root.setProperty('--term-side-bottom', px(innerHeight - document.querySelector('footer').getBoundingClientRect().top + 4));
 };
 placeTerm(); addEventListener('resize', placeTerm); addEventListener('term-placed', () => requestAnimationFrame(placeTerm));
@@ -580,24 +609,51 @@ async function openWatchPhone() {
   const box = document.createElement('div');
   box.className = 'watchqr';
   const close = () => box.remove();
-  box.addEventListener('click', e => { if (e.target === box || e.target.dataset.x !== undefined) close(); });
   document.body.appendChild(box);
+  let showQr = null, note = '';
   const render = async () => {
     const info = await (await fetch('/api/watch/links')).json();
     const urls = (info.urls || []).filter(u => !/127\.0\.0\.1|localhost/.test(u) || info.dev);
     const qr = u => { if (!window.qrcode) return ''; const q = window.qrcode(0, 'M'); q.addData(u); q.make(); return q.createSvgTag({ cellSize: 5, margin: 3, scalable: true }); };
-    box.innerHTML = `<div class="watchqr-card"><button class="watchqr-x" data-x title="Close">✕</button><h3>Watch on your phone</h3>
-      ${!info.lan && !info.dev ? `<p>Watching from a phone is off. Turn it on to let phones and tablets on your Wi-Fi watch (view only, with a private key).</p><div class="btns"><button data-on class="primary">Turn on phone watching</button></div>`
-        : `<p>Point your phone's camera at a code and tap the link. Then bookmark the page or <b>Add to Home Screen</b>, so you never need this again.</p>
-      <div class="watchqr-list">${urls.map(u => `<div class="watchqr-item"><div class="watchqr-code">${qr(u)}</div><div class="watchqr-url">${esc(u.replace(/k=[^&]+/, 'k=•••'))}</div><button data-copy="${esc(u)}" title="Copy the full link (with its key) to paste into a message to yourself">Copy link</button></div>`).join('') || '<p>No network address found. Is the PC on Wi-Fi or a network cable?</p>'}</div>
-      <p class="muted">Away from home? Install Tailscale on the PC and the phone: its address (100.x.x.x) shows up here as one more code.</p>
-      ${info.lan ? '<div class="btns"><button data-off>Turn phone watching off</button></div>' : ''}`}</div>`;
+    box.innerHTML = `<div class="watchqr-card"><button class="watchqr-x" data-x title="Close">✕</button><h3>Watch from other devices</h3>
+      ${!info.lan && !info.dev ? `<p>Only this PC can watch now. Turn this on to let phones, tablets and other computers watch (view only, nothing on the page can edit).</p><div class="btns"><button data-on class="primary">Let other devices watch</button></div>`
+        : `<h4>📶 On your home Wi-Fi: no password</h4><p>Open this address in the browser on the phone or tablet. Bookmark it or <b>Add to Home Screen</b> to keep it.</p>
+      <div class="watch-links">${urls.map(u => `<div class="watch-link"><code>${esc(u)}</code><button data-copy="${esc(u)}" title="Copy the address">Copy</button><button data-qr="${esc(u)}" title="Show a QR code of this address (scan it instead of typing)">QR</button></div>${showQr === u ? `<div class="watchqr-code">${qr(u)}</div>` : ''}`).join('') || '<p>No network address found. Is the PC on Wi-Fi or a network cable?</p>'}</div>
+      <h4>🌍 From outside your network: password</h4>
+      <p>Anything that is not on your home network (another Wi-Fi, mobile data through a tunnel or port forwarding) gets a sign-in page. ${info.hasPassword ? '<b>A password is set.</b> Changing it signs every device out.' : '<b>No password is set</b>, so nobody can watch from outside.'} At least 6 characters; a PIN of 6+ digits gets a number pad and signs in as soon as it is typed.</p>
+      <div class="watch-warn">
+        <b>⚠️ You are responsible for your computer's safety.</b> Letting devices outside your home reach this PC opens a way in from the internet.
+        Simple GLB Editor is free software provided <b>“as is”, without any warranty</b> (see LICENSE.md): you alone are responsible for protecting your computer, network, tunnel and password, and for anything that happens if someone gets in. The watch page can only show models, but no software is perfectly secure.
+        <ul><li>Prefer a tunnel with https and its own sign-in (for example <a href="https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/" target="_blank" rel="noopener">Cloudflare Access</a>) over opening a port on your router.</li>
+        <li>Use a password or PIN you use nowhere else. Keep Windows, your browser and your antivirus up to date.</li>
+        <li>How to protect your computer, from the U.S. Cybersecurity and Infrastructure Security Agency (CISA): <a href="https://www.cisa.gov/secure-our-world" target="_blank" rel="noopener">Secure Our World</a> · <a href="https://www.cisa.gov/secure-our-world/use-strong-passwords" target="_blank" rel="noopener">Use strong passwords</a> · <a href="https://www.cisa.gov/secure-our-world/update-software" target="_blank" rel="noopener">Update software</a></li></ul>
+        <label class="watch-accept"><input type="checkbox" id="watchRisk"> I understand that I am responsible for protecting my computer, and I accept the risk of letting devices outside my home watch.</label>
+      </div>
+      <div class="watch-pw"><input type="password" id="watchPw" placeholder="${info.hasPassword ? 'New password or PIN' : 'Password or PIN'}" autocomplete="new-password"><input type="password" id="watchPw2" placeholder="Type it again" autocomplete="new-password">
+        <button data-setpw class="primary">${info.hasPassword ? 'Change password' : 'Set password'}</button>${info.hasPassword ? '<button data-clearpw title="Remove the password: nobody can watch from outside any more">Remove</button>' : ''}</div>
+      <div class="watch-note">${esc(note)}</div>
+      <p class="muted">How the password is protected: it is never stored. This PC keeps only a salted scrypt hash (a one-way scramble that cannot be turned back into the password), and sign-ins are limited to 5 wrong tries per device and 30 per hour from outside. On the way it is only encrypted if the link starts with https (Cloudflare Tunnel and Tailscale do this; a port forwarded on the router does not). Point the tunnel at http://localhost:${info.port || 5180}.</p>
+      ${info.lan ? '<div class="btns"><button data-off>Stop other devices watching</button></div>' : ''}`}</div>`;
   };
   box.addEventListener('click', async e => {
-    const t = e.target.closest('[data-copy],[data-on],[data-off]'); if (!t) return;
-    if (t.dataset.copy) { await navigator.clipboard.writeText(t.dataset.copy).catch(() => {}); status('Link copied (it includes the private key)'); return; }
+    if (e.target === box || e.target.dataset.x !== undefined) return close();
+    const t = e.target.closest('[data-copy],[data-on],[data-off],[data-qr],[data-setpw],[data-clearpw]'); if (!t) return;
+    if (t.dataset.copy) { await navigator.clipboard.writeText(t.dataset.copy).catch(() => {}); status('Watch address copied'); return; }
+    if (t.dataset.qr) { showQr = showQr === t.dataset.qr ? null : t.dataset.qr; return render(); }
+    if (t.dataset.setpw !== undefined || t.dataset.clearpw !== undefined) {
+      let password = null;
+      if (t.dataset.setpw !== undefined) {
+        if (!$('#watchRisk').checked) { note = 'Tick the box to confirm you are responsible for protecting your computer first.'; return render(); }
+        password = $('#watchPw').value;
+        if (password !== $('#watchPw2').value) { note = 'The two passwords are not the same.'; return render(); }
+      } else if (!confirm('Remove the watch password? Nobody can watch from outside your network any more.')) return;
+      const r = await (await fetch('/api/watch/password', { method: 'POST', body: JSON.stringify({ password }) })).json();
+      note = r.error || (r.hasPassword ? 'Password saved. Devices from outside sign in with it.' : 'Password removed.');
+      return render();
+    }
     await fetch('/api/watch/lan?on=' + (t.dataset.on !== undefined ? '1' : '0'), { method: 'POST' }); render();
   });
+  box.addEventListener('keydown', e => { if (e.key === 'Enter' && e.target.id?.startsWith('watchPw')) box.querySelector('[data-setpw]')?.click(); });
   render();
 }
 function renderOutliner() {
@@ -738,7 +794,6 @@ function renderBars() {
 }
 var queued = false; // var: panels can ask for a render before this line runs
 function cleanupWatch() {
-  if (typeof cleanPlan === 'undefined') return;
   if (!panels.isOpen('cleanup') && cleanPlan) { cleanPlan = null; showPlan(ed, null); }
   else if (panels.isOpen('cleanup') && cleanPlan && ed.undoStack.length !== cleanUndoLen) planNow();
 }
@@ -823,7 +878,7 @@ $('#cleanBody').addEventListener('click', e => {
 });
 // ---------------- sprite sheets ----------------
 const spritePrefs = { front: 'auto', directions: 4, view: 'rpg', size: 64, fps: 12, style: 'smooth', outline: true, bg: '', ...settings.get('sprites', {}) };
-let spritePrev = null, spriteTimer = 0;
+let spriteTimer = 0;
 function openSprites() {
   if (inBuild()) return status('Sprite sheets are made from a finished model: Make model first (Ctrl+Enter)');
   if (!ed.meshes().length) return status('Open a model first');
@@ -856,7 +911,7 @@ function spriteOpts() {
   if (ed.clips.length && !picked.length) throw new Error('Tick at least one animation');
   return { front: sp.front, clips: ed.clips.length ? picked : null, directions: sp.directions, view: sp.view, size: sp.size, fps: sp.fps, style: sp.style, outline: sp.outline, background: sp.bg || null, onProgress: (d, t) => { $('#sprInfo').textContent = `Drawing ${d} / ${t} frames…`; } };
 }
-function showSpritePreview(r, canvas, json) {
+function showSpritePreview(canvas, json) {
   const img = $('#sprSheet'); img.src = canvas ? canvas.toDataURL('image/png') : ''; img.style.imageRendering = spritePrefs.style === 'pixel' ? 'pixelated' : '';
   const tags = json.meta.frameTags, sel = $('#sprRow');
   sel.innerHTML = tags.map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join(''); sel.hidden = tags.length < 2;
@@ -879,8 +934,7 @@ document.addEventListener('click', e => {
       const r = await ed.renderSprites({ ...spriteOpts(), save, keepCanvas: true });
       const sheet = r.sheetCanvases?.[0] || null;
       $('#sprInfo').textContent = `${r.frames} frames, ${r.frameSize[0]}×${r.frameSize[1]} px, sheet ${r.sheets.map(s => s.w + '×' + s.h).join(', ')} px, ${r.ms} ms` + (save ? ` — saved to Library / ${r.sheets.map(s => s.png).join(', ')} (+ .json)` : '');
-      spritePrev = r;
-      if (sheet) showSpritePreview(r, sheet, r.sheetJsons[0]);
+      if (sheet) showSpritePreview(sheet, r.sheetJsons[0]);
     } finally { btns.forEach(b => { b.disabled = false; }); }
   });
 });
@@ -907,8 +961,13 @@ function tlColours() { // the timeline is a canvas: it reads the theme's colours
   const cs = getComputedStyle(document.documentElement), v = n => cs.getPropertyValue(n).trim();
   return (tlC = { bg: v('--clock'), major: v('--scroll-thumb'), minor: v('--border'), muted: v('--muted'), row: v('--panel'), accent2: v('--accent2'), text: v('--text'), danger: v('--danger'), accent: v('--accent') });
 }
+let tlVer = 0, tlKey = ''; ed.addEventListener('change', () => tlVer++); // edits / tab switches change the keys shown
 function drawTimeline() {
+  requestAnimationFrame(drawTimeline);
   const w = tl.clientWidth, h = tl.clientHeight, dpr = devicePixelRatio;
+  const key = [w, h, dpr, ed.time, dur(), ed.fps, ed.animMode, ed.playing, tlVer, tlDrag?.moving, tlDrag?.to, document.documentElement.dataset.theme].join();
+  if (key === tlKey) return; // nothing changed: skip the redraw (it ran every frame)
+  tlKey = key;
   if (tl.width !== Math.round(w * dpr) || tl.height !== Math.round(h * dpr)) { tl.width = Math.round(w * dpr); tl.height = Math.round(h * dpr); }
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   const C = tlColours(); g.fillStyle = C.bg; g.fillRect(0, 0, w, h);
@@ -934,7 +993,6 @@ function drawTimeline() {
   $('#timecode').textContent = `f ${Math.round(ed.time * ed.fps)}`;
   $('#timesec').textContent = ed.clip ? `${ed.time.toFixed(2)} / ${(+dur().toFixed(2))} s` : 'no animation';
   const pb = $('#btnPlay'), lbl = ed.playing ? '❚❚' : '▶'; if (pb.textContent !== lbl) pb.textContent = lbl;
-  requestAnimationFrame(drawTimeline);
 }
 requestAnimationFrame(drawTimeline);
 tl.addEventListener('pointerdown', e => {
@@ -969,8 +1027,8 @@ window.addEventListener('panels-changed', () => ed._resize());
 keymap.decorate(document);
 queueRender();
 const q = new URLSearchParams(location.search);
-// tabs you had open last time come back (not for hidden automation windows or test URLs)
 if (panels.isOpen('sprites')) panels.close('sprites'); // its contents are made when it is opened
+// tabs you had open last time come back (not for hidden automation windows or test URLs)
 tabs.hiddenApp = q.has('hidden');
 if (!q.has('hidden') && !q.get('load') && !q.has('dummy')) await tabs.restore(settings.get('tabs', null));
 tabs.persist = st => settings.set('tabs', st); tabs.save();

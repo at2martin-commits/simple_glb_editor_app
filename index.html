@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="styles.css">
 <script src="/vendor/qrcode/qrcode.js"></script>
 <link rel="stylesheet" href="/vendor/xterm/xterm.css">
+<link rel="stylesheet" href="/vendor/ai-panel/ai-panel.css">
 <script src="/vendor/xterm/xterm.js"></script>
 <script src="/vendor/xterm/addon-fit.js"></script>
 <script type="importmap">
@@ -21,8 +22,15 @@
 </head>
 <body>
 
+<header class="top">
+  <div class="brand"><img src="icon.svg" alt=""><div><b>Simple GLB Editor</b><small>Build it. Rig it. Make it move.</small></div></div>
+  <div class="grow"></div>
+  <span class="muted" id="fileName"></span>
+</header>
+<nav class="menubar" id="menubar"><span id="menuNames"></span><div class="grow"></div>
+  <span id="aiPanelButton"></span> <!-- the AI panel's 🤖 ▾ button (vendor/ai-panel/ai-panel.html) goes here -->
+</nav>
 <header class="toolbar">
-  <div class="brand"><img src="icon.svg" alt="">GLB Editor</div>
   <div class="group">
     <button class="primary" data-act="open" title="Open a 3D model file (.glb) from anywhere on your computer. You can also drag a file onto the window.">Open…</button>
     <div class="dropdown" id="libDropdown">
@@ -38,9 +46,6 @@
       </div>
     </div>
   </div>
-  <div class="grow"></div>
-  <span class="muted" id="fileName"></span>
-  <div class="rowbreak"></div>
   <div class="group" id="modeGroup">
     <button class="mode" data-act="modeObject" title="Object mode: click a whole model part to pick it, then move, turn or resize it.">Object</button>
     <button class="mode" data-act="modeVertex" title="Vertex mode: pick the individual corner points of the model's surface and move them, to reshape or repair it.">Vertex</button>
@@ -52,18 +57,6 @@
   </div>
   <div class="group">
     <button class="anim" id="btnAnim" data-act="animToggle" title="Switch between Edit (the model's resting shape, where you build things) and Animate (where you pose the skeleton over time to make it move).">Edit</button>
-  </div>
-  <div class="group" id="claudeGroup">
-  <div class="dropdown" id="claudeDropdown">
-    <span class="splitbtn"><button id="btnClaude" title="Open or close the Claude panel (Ctrl+`): chat with Claude Code inside the editor. It works on your models in its own tab. Pressed in = open.">🤖 Claude</button><button id="btnClaudeMenu" title="Claude options: sign in with your Claude subscription or the Anthropic API, sign out, new conversation.">▾</button></span>
-    <div id="claudeMenu" class="menu right" hidden>
-      <div class="menu-note" id="claudeNote">…</div>
-      <button data-claude="open" title="Open the AI panel and start the assistant there (Ctrl+`).">Open the AI panel</button>
-      <button data-claude="new" title="Close the conversation that is running and start a fresh one.">New conversation</button>
-      <hr>
-      <div id="agentItems"></div>
-    </div>
-  </div>
   </div>
 </header>
 
@@ -158,25 +151,7 @@
 </section>
 <section class="panel" data-panel="cleanup"><div class="panel-body" id="cleanBody"></div></section>
 <section class="panel" data-panel="sprites"><div class="panel-body" id="spritesBody"></div></section>
-<div id="term" hidden>
-  <div id="termGripSide" title="Drag to make the terminal wider or narrower."></div>
-  <div class="term-head"><span class="term-avatar">🤖</span><b>Claude</b><span id="termState" class="term-state idle" title="What Claude is doing right now.">Not started</span><span class="muted" title="Claude works in this folder and edits models in its own tab of the editor.">in <span id="termFolder"></span></span><span class="grow"></span>
-    <button id="termNew" title="Close this conversation and start a new one.">New conversation</button><button id="termMode"></button><button id="termHide" title="Hide the terminal (Ctrl+`). The conversation keeps running.">▲ Hide</button></div>
-  <div id="termCard"><div id="termHost"></div></div>
-  <div id="termChoices" title="Claude's choices as buttons: click one instead of typing it."><span id="termOptions"></span><span class="grow"></span>
-    <button data-key="up" title="Up arrow: move up in a menu.">↑</button><button data-key="down" title="Down arrow: move down in a menu.">↓</button><button data-key="tab" title="Tab key.">Tab</button><button data-key="esc" title="Escape: cancel, or stop Claude while it works.">Esc</button><button data-key="enter" title="Enter: confirm the highlighted choice / send.">Enter ⏎</button></div>
-  <div id="termCompose">
-    <textarea id="termInput" rows="1" placeholder="Message Claude…  (Enter sends · Shift+Enter = new line)" title="Type to Claude here. Enter sends; Shift+Enter starts a new line. You can also type straight into the conversation above."></textarea>
-    <button id="termSend" class="primary" title="Send to Claude (Enter).">Send ➤</button>
-  </div>
-  <div id="termGrip" title="Drag to make the terminal taller or shorter."></div>
-  <div id="termWs" hidden><div class="ws-box">
-    <h3>Where should Claude work?</h3>
-    <div class="hint">Claude reads that folder's notes and files, works freely inside it, and keeps its conversations per folder. Pick your project's folder (for example the game) to let it change those files too.</div>
-    <div id="wsList"></div>
-    <div class="ws-btns"><button id="wsPick" title="Pick any folder on your computer.">📁 Choose another folder…</button><span class="grow"></span><button id="wsCancel">Cancel</button><button id="wsStart" class="primary" title="Start the new conversation in the picked folder (Enter).">Start</button></div>
-  </div></div>
-</div>
+<div id="aiPanelHost"></div> <!-- the AI panel (vendor/ai-panel/ai-panel.html, loaded by src/ui.js) goes here -->
 <div class="dockzone" id="dockzoneL" hidden style="left:0"></div>
 <div class="dockzone" id="dockzoneR" hidden style="right:0"></div>
 <div id="libCtx" class="menu ctx" hidden></div>

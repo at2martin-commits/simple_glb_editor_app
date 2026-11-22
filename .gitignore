@@ -14,3 +14,5 @@ SimpleGLBEditor.exe
 # local tooling / logs
 .claude/settings.local.json
 *.log
+scripts/.testbench/
+scripts/__pycache__/

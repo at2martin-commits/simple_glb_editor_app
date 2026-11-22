@@ -1,7 +1,7 @@
 {
   "name": "simple-glb-editor",
-  "version": "0.1.0",
-  "description": "Simple browser GLB editor: rig, stick-figure skeleton, vertex/edge edit, animate, loop",
+  "version": "0.2.0",
+  "description": "Simple GLB Editor: desktop .glb editor - repair, rig, animate, paint, build from blocks",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
@@ -15,6 +15,7 @@
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
+    "ai-panel": "github:Marty-s-Stuff/ai-panel#v1.2.4",
     "node-pty": "^1.1.0",
     "qrcode-generator": "1.4.4",
     "three": "^0.160.0",
@@ -34,7 +35,6 @@
     "files": [
       "main.js",
       "preload.js",
-      "agents/**",
       "server.js",
       "index.html",
       "watch.html",

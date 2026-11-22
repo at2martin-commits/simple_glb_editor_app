@@ -3,7 +3,7 @@
 //   claude mcp add -s user simple-glb -- node "<editor folder>\mcp\server.mjs"
 // It drives the real desktop app: it reuses an editor that is already open, or starts one
 // (visible by default, so you can watch; pass visible:false to glb_start, or set GLB_MCP_HIDDEN=1, for no window).
-// The app listens on 127.0.0.1 only and needs the random token it writes to %APPDATA%\simple-glb-editor\control.json.
+// The app listens on 127.0.0.1 only and needs the random token it writes to %APPDATA%\simple-glb-editor\control\<pid>.json.
 // It never closes an editor it did not start.
 import fs from 'fs';
 import path from 'path';
@@ -112,9 +112,9 @@ async function connect(autoStart = true) {
 // Each MCP server process = one Claude session = its own tab in the editor (made on the first call, in the background).
 const SESSION = { id: crypto.randomUUID(), name: process.env.GLB_SESSION_NAME || undefined, tab: undefined };
 /** Run an async JS body inside the editor window, in this session's tab (`editor`, `glbAction`, `THREE` in scope). */
-async function run(code) {
+async function run(code, session = SESSION) {
   const c = await connect();
-  const r = await fetch(`http://127.0.0.1:${c.port}/run`, { method: 'POST', headers: { 'x-glb-token': c.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ code, session: SESSION }) });
+  const r = await fetch(`http://127.0.0.1:${c.port}/run`, { method: 'POST', headers: { 'x-glb-token': c.token, 'Content-Type': 'application/json' }, body: JSON.stringify({ code, session }) });
   const out = await r.json();
   if (!out.ok) throw new Error(out.error + (out.stack ? '\n' + out.stack : ''));
   return out.value;
@@ -279,6 +279,26 @@ const TOOLS = [
     },
   },
   {
+    name: 'glb_tabs',
+    description: 'Your editor tabs. Several items (e.g. 10 props) = one tab each, so the user can look at every one in 3D (also on the watch page from far away): do:"open" name:"barrel" switches to that tab (made if new) and every later call works there until the next open. do:"list" = your tabs {name, current, unsaved, file, takenOver}. do:"close" names:["barrel",…] or "all" closes your own tabs, e.g. once the user approved them: save first (unsaved tabs are kept unless force:true). Never closes the user\'s tabs or tabs they took over. To show an animation (also on the watch page), leave its tab in Animate mode, clip picked, looping and playing.',
+    inputSchema: { type: 'object', properties: { do: { type: 'string', enum: ['open', 'list', 'close'] }, name: { type: 'string', description: 'open: the tab name' }, names: { description: 'close: tab names, or "all"', anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'string' }] }, force: { type: 'boolean' } }, required: ['do'] },
+    run: async a => {
+      const noTab = { ...SESSION, noTab: true }, call = code => run(code, noTab);
+      if (a.do === 'open') {
+        if (!a.name) throw new Error('open needs a name, e.g. {do:"open", name:"barrel"}');
+        SESSION.tab = String(a.name);
+        return text(`Working in the tab "${await run('const t = window.tabs.list.find(x => x.ed === editor); return window.tabs.label(t);')}" now.`);
+      }
+      if (a.do === 'list') return text(await call(`return window.tabs.sessionTabs(${J(SESSION)})`));
+      if (a.do === 'close') {
+        const r = await call(`return window.tabs.closeSessionTabs(${J(SESSION)}, ${J(a.names ?? 'all')}, ${!!a.force})`);
+        if (SESSION.tab && r.closed.includes(SESSION.tab)) SESSION.tab = undefined; // the next call starts a fresh tab
+        return text(r);
+      }
+      throw new Error('do must be open, list or close');
+    },
+  },
+  {
     name: 'glb_help',
     description: 'The editor\'s manual: modes, conventions, the whole editor.* / editor.build.* API. Optional section filter, e.g. "Build mode", "Pixel paint", "Expression frames", "Clothing layers", "Slide", "Colliders", "MCP".',
     inputSchema: { type: 'object', properties: { section: { type: 'string', description: 'Optional: only the sections whose text contains this (e.g. "Build mode").' } } },
@@ -302,7 +322,7 @@ async function handle(msg) {
       protocolVersion: params.protocolVersion || '2025-06-18',
       capabilities: { tools: {} },
       serverInfo: { name: 'simple-glb-editor', version: VERSION },
-      instructions: 'Drives the user\'s Simple GLB Editor (their default 3D tool): rigging, vertex repair, clean-up, painting, animation, Blockbench import and Build mode (Blockbench-style modelling). Start with glb_info / glb_open / glb_build {do:"info"}; anything else via glb_run (read glb_help first); check with glb_screenshot; save into the Library. You work in your own editor tab (the user watches; if they Take over, ask them). Never close the user\'s editor.',
+      instructions: 'Drives the user\'s Simple GLB Editor (their default 3D tool): rigging, vertex repair, clean-up, painting, animation, Blockbench import and Build mode (Blockbench-style modelling). Start with glb_info / glb_open / glb_build {do:"info"}; anything else via glb_run (read glb_help first); check with glb_screenshot; save into the Library. You work in your own editor tab (the user watches; if they Take over, ask them); several items = one tab each (glb_tabs), closed after the user approves. Never close the user\'s editor.',
 
     });
   }

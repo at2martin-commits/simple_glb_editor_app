@@ -37,6 +37,12 @@ Fixing a bad download: **Vertex** / **Edge** mode: pick, drag the arrows to move
 - **Other AI assistants**: the panel is plugin-based. Claude Code is the built-in plugin; add another command-line assistant by dropping a small `.json` file into `%APPDATA%\simple-glb-editor\agents` (see [agents/README.md](agents/README.md)), then pick it in the **▾** menu.
 - **MCP server**: `mcp/server.mjs` lets AI assistants that speak the [Model Context Protocol](https://modelcontextprotocol.io) open, edit, build, screenshot and save models in the running editor. For Claude Code: `claude mcp add -s user simple-glb -- node "<editor folder>\mcp\server.mjs"`. The full scripting API is in [CLAUDE.md](CLAUDE.md).
 
+## Watching from other devices
+
+**View → Watch from other devices…** shows a view-only page of what the editor shows. Phones and tablets on your home Wi-Fi just open the address. Devices outside your network (through a tunnel such as Cloudflare Tunnel or Tailscale) get a sign-in page and need a password or PIN you set there; only a salted hash of it is kept on your PC.
+
+> ⚠️ **Your responsibility.** Making your PC reachable from the internet is at your own risk. Simple GLB Editor is provided as is, without any warranty (see the license): protecting your computer, network, tunnel and password is up to you. Prefer a tunnel with https and its own sign-in (for example [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/applications/configure-apps/self-hosted-public-app/)) over opening a router port, and see CISA's [Secure Our World](https://www.cisa.gov/secure-our-world) for how to keep your computer safe.
+
 ## Building from source
 
 Needs [Node.js](https://nodejs.org) (20 or newer).

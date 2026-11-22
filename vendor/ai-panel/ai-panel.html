@@ -1,0 +1,30 @@
+<!-- The AI panel's markup: the AI split button with its ▾ menu, then the panel. The app puts the button at the end of its menu line and the panel at the end of the page. Names and icons are filled in from the picked assistant plugin. -->
+  <div class="dropdown" id="claudeDropdown">
+    <span class="splitbtn"><button id="btnClaude" title="Open or close the AI panel (Ctrl+`). Pressed in = open.">🤖 AI</button><button id="btnClaudeMenu" title="AI assistant options: sign in, sign out, new conversation, pick the assistant.">▾</button></span>
+    <div id="claudeMenu" class="menu right" hidden>
+      <div class="menu-note" id="claudeNote">…</div>
+      <button data-claude="open" title="Open the AI panel and start the assistant there (Ctrl+`).">Open the AI panel</button>
+      <button data-claude="new" title="Close the conversation that is running and start a fresh one.">New conversation</button>
+      <hr>
+      <div id="agentItems"></div>
+    </div>
+  </div>
+<div id="term" hidden>
+  <div id="termGripSide" title="Drag to make the terminal wider or narrower."></div>
+  <div class="term-head"><span class="term-avatar">🤖</span><b>AI</b><span id="termState" class="term-state idle" title="What the assistant is doing right now.">Not started</span><span class="muted" title="The assistant works in this folder and changes the files there.">in <span id="termFolder"></span></span><span class="grow"></span>
+    <button id="termNew" title="Close this conversation and start a new one.">New conversation</button><button id="termMode"></button><button id="termHide" title="Hide the terminal (Ctrl+`). The conversation keeps running.">▲ Hide</button></div>
+  <div id="termCard"><div id="termHost"></div></div>
+  <div id="termChoices" title="The assistant's choices as buttons: click one instead of typing it."><span id="termOptions"></span><span class="grow"></span>
+    <button data-key="up" title="Up arrow: move up in a menu.">↑</button><button data-key="down" title="Down arrow: move down in a menu.">↓</button><button data-key="tab" title="Tab key.">Tab</button><button data-key="esc" title="Escape: cancel, or stop the assistant while it works.">Esc</button><button data-key="enter" title="Enter: confirm the highlighted choice / send.">Enter ⏎</button></div>
+  <div id="termCompose">
+    <textarea id="termInput" rows="1" placeholder="Message…  (Enter sends · Shift+Enter = new line)" title="Type to the assistant here. Enter sends; Shift+Enter starts a new line. You can also type straight into the conversation above."></textarea>
+    <button id="termSend" class="primary" title="Send (Enter).">Send ➤</button>
+  </div>
+  <div id="termGrip" title="Drag to make the terminal taller or shorter."></div>
+  <div id="termWs" hidden><div class="ws-box">
+    <h3>Where should <span class="ai-name">it</span> work?</h3>
+    <div class="hint"><span class="ai-name">The assistant</span> reads that folder's notes and files, works freely inside it, and keeps its conversations per folder. Pick your project's folder to let it change those files too.</div>
+    <div id="wsList"></div>
+    <div class="ws-btns"><button id="wsPick" title="Pick any folder on your computer.">📁 Choose another folder…</button><span class="grow"></span><button id="wsCancel">Cancel</button><button id="wsStart" class="primary" title="Start the new conversation in the picked folder (Enter).">Start</button></div>
+  </div></div>
+</div>

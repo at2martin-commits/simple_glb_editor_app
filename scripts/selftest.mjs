@@ -1,35 +1,56 @@
 #!/usr/bin/env node
-// Self-test: drives the real editor (its own hidden copy) through every major feature and prints pass/fail + timings.
-//   node scripts/selftest.mjs                 -> runs the app from source (electron .)
+// Self-test: drives the real editor (its own hidden copy) through every major feature. Output follows the author's Test Bench
+// rules (== part ==, PASS / FAIL lines, -- part: N passed, M failed, SUITE:), so scripts/testbench.py can run it (testbench.json).
+//   node scripts/selftest.mjs                 -> runs the app from source (electron .), every part
+//   node scripts/selftest.mjs tabs "AI panel" -> only those parts (names as in testbench.json)
 //   node scripts/selftest.mjs --exe <path>    -> runs a packaged build instead (e.g. dist\win-unpacked\Simple GLB Editor.exe)
 //   node scripts/selftest.mjs --json out.json -> also writes the results as JSON (to compare timings between runs)
 // It never touches an editor you have open, and only writes into Library/_selftest (removed at the end).
 import { spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2), opt = k => { const i = args.indexOf(k); return i >= 0 ? args[i + 1] : null; };
-const exe = opt('--exe'), jsonOut = opt('--json');
+const want = args.filter((a, i) => !a.startsWith('--') && !args[i - 1]?.startsWith('--')); // part names (none = every part)
+const exe = opt('--exe'), jsonOut = opt('--json'), suiteStart = Date.now();
 // Its hidden editor has its own control file (control/<pid>.json) with a tag; other editors' files are never touched.
-const CTL_DIR = path.join(process.env.APPDATA || '', 'simple-glb-editor', 'control'), TAG = 'selftest-' + Date.now();
+const CTL_DIR = path.join(process.env.SIMPLE_GLB_USERDATA || path.join(process.env.APPDATA || '', 'simple-glb-editor'), 'control'), TAG = 'selftest-' + Date.now();
 const app = exe ? spawn(exe, ['--hidden', '--tag=' + TAG], { stdio: 'ignore' }) : spawn(path.join(ROOT, 'node_modules', 'electron', 'dist', 'electron.exe'), ['.', '--hidden', '--tag=' + TAG], { cwd: ROOT, stdio: 'ignore' });
 let ctl = null;
 for (let i = 0; i < 600 && !ctl; i++) { await new Promise(r => setTimeout(r, 100)); try { for (const f of fs.readdirSync(CTL_DIR)) { const j = JSON.parse(fs.readFileSync(path.join(CTL_DIR, f), 'utf8')); if (j.tag === TAG) ctl = j; } } catch {} }
-if (!ctl) { console.error('The editor did not start'); app.kill(); process.exit(2); }
-const run = async (code, session) => { const r = await (await fetch(`http://127.0.0.1:${ctl.port}/run`, { method: 'POST', headers: { 'x-glb-token': ctl.token }, body: JSON.stringify({ code, session }) })).json(); if (!r.ok) throw new Error(r.error); return r.value; };
+if (!ctl) { console.log('SUITE: 0 passed, 1 failed\n  FAILED: the editor did not start'); app.kill(); process.exit(2); }
+const run = async (code, session) => { const r = await (await fetch(`http://127.0.0.1:${ctl.port}/run`, { method: 'POST', headers: { 'x-glb-token': ctl.token }, body: JSON.stringify({ code, session }), signal: partEnd < Infinity ? AbortSignal.timeout(Math.max(1, partEnd - Date.now())) : undefined })).json(); if (!r.ok) throw new Error(r.error); return r.value; };
 
 const results = [];
+const WALK = `editor.loadDummy(); editor.fitSkeleton(); editor.bind(); editor.makeWalk(); await editor.save('dummy_walk', '_selftest');`; // (each part can run on its own)
+let cur = null, skip = false, partEnd = Infinity, partMin = 2; // the part running now (Test Bench rules: 2 minutes each unless testbench.json says)
+const limits = Object.fromEntries((JSON.parse(fs.readFileSync(path.join(ROOT, 'testbench.json'), 'utf8')).parts || []).map(p => [p.name, p]));
+async function part(name) {
+  endPart(); skip = want.length > 0 && !want.includes(name); if (skip) return;
+  cur = { name, passed: 0, failed: 0 }; partMin = limits[name]?.minutes || 2;
+  if (limits[name]?.heavy) while (os.freemem() < 4 * 2 ** 30) { console.log(`waiting for 4 GB of free memory (${(os.freemem() / 2 ** 30).toFixed(1)} GB now)`); await new Promise(r => setTimeout(r, 5000)); }
+  partEnd = Date.now() + partMin * 60e3; console.log(`== ${name} ==`);
+}
+function endPart() { if (cur) console.log(`-- ${cur.name}: ${cur.passed} passed, ${cur.failed} failed`); cur = null; partEnd = Infinity; }
 async function test(name, code, check) {
+  if (skip) return;
   const t0 = Date.now(); let value, err = null;
-  try { value = await run(code); const bad = check ? check(value) : null; if (bad) err = bad; } catch (e) { err = e.message; }
-  const ms = Date.now() - t0; results.push({ name, ok: !err, ms, err, value: err ? value : undefined });
-  console.log(`${err ? 'FAIL' : ' ok '}  ${String(ms).padStart(6)} ms  ${name}${err ? '\n        ' + String(err).slice(0, 300) : ''}`);
+  try { value = await run(code); const bad = check ? check(value) : null; if (bad) err = bad; } catch (e) { err = e.name === 'TimeoutError' ? `ran past this part's ${partMin}-minute limit` : e.message; }
+  record(name, Date.now() - t0, err, value);
+}
+function record(name, ms, err, value) {
+  results.push({ name, ok: !err, ms, err, value: err ? value : undefined });
+  cur[err ? 'failed' : 'passed']++;
+  console.log(err ? `FAIL ${name}   ${String(err).replace(/\s+/g, ' ').slice(0, 300)}` : `PASS ${name}`);
 }
 const has = (rel) => fs.existsSync(path.join(ROOT, 'Library', rel));
 
 // ---------------------------------------------------------------- model editing
+await part('model editing');
 await test('dummy: load', `editor.loadDummy(); const i = editor.info(); return { meshes: i.meshes.length };`, v => v.meshes ? null : 'no mesh');
 await test('rig: fit skeleton + bind + walk', `editor.setMode('bone'); editor.fitSkeleton(); editor.bind(); editor.makeWalk(); const i = editor.info(); return { bones: i.bones.length, clips: i.clips.length };`, v => v.bones >= 10 && v.clips >= 1 ? null : JSON.stringify(v));
 await test('anim: pose + key + close loop + undo', `editor.setAnimMode(true); editor.newClip('Wave', 1); editor.pose('UpperArm_L', [0,0,60], 0.5); editor.closeLoop(); const k = editor.keyTimes('UpperArm_L').length; editor.undo(); return { k };`, v => v.k >= 1 ? null : 'no keys');
@@ -39,6 +60,7 @@ await test('save + reload .glb', `await editor.save('dummy_walk', '_selftest'); 
 await test('undo / redo stress (40 steps)', `editor.setMode('bone'); const b = editor.allBones()[3]; for (let i = 0; i < 20; i++) editor.setBonePosition(b.name, b.getWorldPosition(new THREE.Vector3()).add(new THREE.Vector3(0, 0.001, 0)).toArray()); for (let i = 0; i < 20; i++) editor.undo(); for (let i = 0; i < 20; i++) editor.redo(); return editor.undoStack.length;`, v => v >= 20 ? null : 'undo stack ' + v);
 
 // ---------------------------------------------------------------- Build mode
+await part('build mode');
 await test('build: every shape + group + mirror + duplicate', `editor.newProject('selftest'); editor.setMode('build'); const B = editor.build;
   const shapes = ['cube','cylinder','cone','sphere','pyramid','wedge','hexagon','pentagon']; shapes.forEach((s, i) => B.add(s, { from: [i * 5, 0, 0], to: [i * 5 + 4, 4, 4], name: 'p_' + s, parent: null }));
   B.add('cube', { from: [-4,12,-2], to: [4,24,2], name: 'torso', parent: null }); B.select('torso'); B.group('chest');
@@ -66,6 +88,7 @@ await test('build: gizmo drags (move snaps, rotate group keeps parts)', `editor.
 await test('memory: 10 loads do not pile up GPU geometries', `editor.setMode('object'); const r = editor.renderer; editor.loadDummy(); r.render(editor.scene, editor.camera); const g0 = r.info.memory.geometries; for (let i = 0; i < 10; i++) { editor.loadDummy(); r.render(editor.scene, editor.camera); } return { before: g0, after: r.info.memory.geometries };`, v => v.after <= v.before + 2 ? null : JSON.stringify(v));
 
 // ---------------------------------------------------------------- big files (only if they are in the Library)
+await part('big files');
 if (has('Blockbench/toon_base_f.bbmodel')) {
   await test('big: open toon_base_f in Build mode', `editor.setAnimMode(false); editor.setMode('build'); return await editor.build.open('Blockbench/toon_base_f.bbmodel');`);
   await test('big: make toon_base_f', `return (await editor.build.makeModel()).slice(0, 80);`);
@@ -73,13 +96,14 @@ if (has('Blockbench/toon_base_f.bbmodel')) {
 if (has('Blockbench/toon_base_m.glb') && has('Blockbench/toon_base_f.glb'))
   await test('big: importClips toon_f -> toon_m', `await editor.load('Blockbench/toon_base_m.glb'); const r = await editor.importClips('Blockbench/toon_base_f.glb'); return { copied: r.copied.length, skipped: r.skippedTracks.length };`, v => v.copied > 0 && v.skipped === 0 ? null : JSON.stringify(v));
 // ---------------------------------------------------------------- tabs
-await test('tabs: open in a new tab, unsaved dot, switch, close (x6)', `const a = tabs.active, n0 = tabs.list.length;
+await part('tabs and sessions');
+await test('tabs: open in a new tab, unsaved dot, switch, close (x6)', `${WALK} const a = tabs.active, n0 = tabs.list.length;
   await tabs.openInNewTab(e => e.load('_selftest/dummy_walk.glb')); const b = tabs.active; const title = tabs.title(b);
   editor.setMode('object'); editor.setObjectTransform(editor.meshes()[0].name, { position: [0.1, 0, 0] }); const dirty = tabs.dirty(b);
   tabs.select(a); const drawing = tabs.list.filter(t => t.ed.active).length; tabs.close(b, { force: true });
   for (let i = 0; i < 5; i++) { tabs.add(); tabs.close(tabs.active, { force: true }); }
   return { n0, n: tabs.list.length, title, dirty, drawing, back: tabs.active === a };`, v => v.n === v.n0 && v.title === 'dummy_walk' && v.dirty && v.drawing === 1 && v.back ? null : JSON.stringify(v));
-{ // a Claude session works in its own background tab; the user's tab stays as it is; Take over / close are reported to the session
+if (!skip) { // a Claude session works in its own background tab; the user's tab stays as it is; Take over / close are reported to the session
   const t0 = Date.now(), S = { id: 'selftest-session', name: 'Selftest' }; let err = null, value;
   try {
     const before = await run('return tabs.list.indexOf(tabs.active)');
@@ -94,8 +118,7 @@ await test('tabs: open in a new tab, unsaved dot, switch, close (x6)', `const a 
     value = { before, still, a, taken: /took over/.test(taken), closed: /closed your tab/.test(closed), again };
     if (before !== still || !a.view || a.shot < 1000 || !value.taken || !value.closed || !/^Selftest/.test(again)) err = JSON.stringify(value);
   } catch (e) { err = e.message; }
-  const ms = Date.now() - t0; results.push({ name: 'tabs: Claude session in its own tab (+ Take over, close)', ok: !err, ms, err, value: err ? value : undefined });
-  console.log(`${err ? 'FAIL' : ' ok '}  ${String(ms).padStart(6)} ms  tabs: Claude session in its own tab (+ Take over, close)${err ? '\n        ' + String(err).slice(0, 300) : ''}`);
+  record('tabs: Claude session in its own tab (+ Take over, close)', Date.now() - t0, err, value);
 }
 await test('tabs: sub-tab of a Build group (filter, new parts land in it, shared undo)', `const main = tabs.add(); editor.setMode('build'); const B = editor.build; B.newDoc('subtest');
   B.add('cube', { from: [-4,12,-2], to: [4,24,2], name: 'torso', parent: null }); B.add('cube', { from: [4,13,-1], to: [7,23,1], name: 'sleeve', parent: null }); B.select('sleeve'); B.group('arm');
@@ -104,7 +127,8 @@ await test('tabs: sub-tab of a Build group (filter, new parts land in it, shared
   tabs.select(main); const iso = B.isolate; editor.undo(); const undone = !B.find('hand');
   tabs.close(main, { force: true }); return { visible, inArm, label, iso, undone, subsLeft: tabs.list.filter(t => t.parent === main).length };`,
   v => v.visible === 1 && v.inArm && v.label.startsWith('[arm]') && v.iso === null && v.undone && v.subsLeft === 0 ? null : JSON.stringify(v));
-await test('sprites: sheet + json from the walking dummy (4 directions, pixel art)', `const t = await tabs.openInNewTab(e => e.load('_selftest/dummy_walk.glb'));
+await part('sprites and build extras');
+await test('sprites: sheet + json from the walking dummy (4 directions, pixel art)', `${WALK} const t = await tabs.openInNewTab(e => e.load('_selftest/dummy_walk.glb'));
   const r = await editor.renderSprites({ folder: '_selftest', name: 'dummy_sprites', directions: 4, size: 32, fps: 8, style: 'pixel', outline: true });
   const j = await (await fetch('/api/lib/file?rel=' + encodeURIComponent(r.json))).json(); tabs.close(tabs.active, { force: true });
   return { clips: r.clips, frames: r.frames, tags: j.meta.frameTags.length, keys: Object.keys(j.frames).length, png: r.png, mode: editor.mode };`,
@@ -116,7 +140,10 @@ await test('build: hollow (round), band paint, plain side names, side pixel size
   const shot = editor.snapshot({ views: ['front', 'back', 'left', 'bottom'], width: 400 }); tabs.close(t, { force: true });
   return { shape: mug.shape, red: mug.mesh.tris.filter(x => x.color === '#c62828').length, err: / × [0-9]+ pixels/.test(err), shot: shot.length };`,
   v => v.shape === 'mesh' && v.red > 0 && v.err && v.shot > 5000 ? null : JSON.stringify(v));
+await part('AI panel');
 await test('AI plugins: the built-in Claude Code plugin loads and the panel shows it', `if (!window.glbTerm) return { skip: 'no desktop bridge' };
+  for (let i = 0; i < 200 && !window.claudeTerm; i++) await new Promise(r => setTimeout(r, 25)); // the shared panel starts after its markup loads
+  await claudeTerm.loadAgents(); // and loads its plugins after that (the button reads "🤖 AI" until then)
   const list = await glbTerm.agents(), c = list.find(a => a.id === 'claude-code');
   return { count: list.length, builtIn: !!c?.builtIn, signIn: (c?.signIn || []).map(s => s.id).join(','), button: document.querySelector('#btnClaude').textContent.trim(), menuItems: document.querySelectorAll('#agentItems [data-signin]').length };`,
   v => v.skip || (v.builtIn && v.signIn === 'claudeai,api' && /Claude/.test(v.button) && v.menuItems === 2) ? null : JSON.stringify(v));
@@ -129,13 +156,42 @@ await test('terminal: claude starts in the in-app terminal; answer buttons read 
   const menu = T._findChoices(); await T._write(CLS + ['Which colour?', 'a) Red', 'b) Green', 'c) Blue'].join(NL) + NL); const letters = T._findChoices();
   return { version: /Claude Code/.test(out), menu: menu && menu.kind + ':' + menu.options.map(o => o.key).join(''), letters: letters && letters.kind + ':' + letters.options.map(o => o.key).join('') };`,
   v => v.skip || (v.version && v.menu === 'menu:123' && v.letters === 'text:abc') ? null : JSON.stringify(v));
+await part('render and memory');
 await test('render: 30 frames of the current view', `const r = editor.renderer, g = r.getContext(); const t0 = performance.now(); for (let i = 0; i < 30; i++) r.render(editor.scene, editor.camera); g.finish(); return +((performance.now() - t0) / 30).toFixed(2);`);
 await test('memory (JS heap MB)', `return performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null;`);
 
+// ---------------------------------------------------------------- watch page security (the watch server on its own, in this process)
+await part('watch page security');
+if (!skip) {
+  const { startWatchServer, hashWatchPassword } = createRequire(import.meta.url)('../server.js');
+  let auth = null; const srv = await startWatchServer({ port: 0, host: '127.0.0.1', auth: { get: () => auth } });
+  const get = (p, h = {}, method = 'GET', body) => fetch(`http://127.0.0.1:${srv.port}${p}`, { method, headers: h, body }).then(r => r.status, e => 'error ' + e.message);
+  const out = { 'X-Forwarded-For': '203.0.113.7' }, login = (pw, ip = '203.0.113.7') => fetch(`http://127.0.0.1:${srv.port}/login`, { method: 'POST', headers: { 'X-Forwarded-For': ip }, body: JSON.stringify({ password: pw }) });
+  const check = async (name, fn) => { const t0 = Date.now(); let err = null; try { err = await fn(); } catch (e) { err = e.message; } record(name, Date.now() - t0, err); };
+  await check('this PC opens the watch page without a password', async () => (await get('/')) === 200 ? null : 'expected 200');
+  await check('outside, no password set: no way in', async () => (await get('/', out)) === 401 && (await get('/api/watch/state', out)) === 401 ? null : 'expected 401');
+  await check('outside: disguised paths cannot read files', async () => { for (const p of ['/vendor/three/..%2f..%2fpackage.json', '/vendor/..%2fwatch.html', '/vendor/three/..%5c..%5cpackage.json']) { const c = await get(p, out); if (c === 200) return `${p} gave 200`; } return (await get('/%E0%A4%A', out)) === 400 ? null : 'a bad %-escape was not refused'; });
+  auth = { ...hashWatchPassword('482913'), secret: 'x'.repeat(40), pin: 6 };
+  await check('wrong password refused, right one signs in', async () => {
+    if ((await login('000000')).status !== 401) return 'wrong password was not refused';
+    const r = await login('482913'), cookie = r.headers.get('set-cookie')?.split(';')[0];
+    if (r.status !== 200 || !cookie) return 'right password did not sign in';
+    if ((await get('/api/watch/state', { ...out, Cookie: cookie })) !== 200) return 'signed-in device was refused';
+    return (await get('/api/watch/state', { ...out, Cookie: 'glbwatch=99999999999999.forged' })) === 401 ? null : 'a forged cookie got in';
+  });
+  await check('5 wrong tries lock that visitor out', async () => { for (let i = 0; i < 5; i++) await login('111111', '198.51.100.9'); return (await login('482913', '198.51.100.9')).status === 429 ? null : 'not locked'; });
+  await check('stopping the watch server drops pages already watching', () => new Promise(res => {
+    fetch(`http://127.0.0.1:${srv.port}/api/watch/events`).then(r => { const rd = r.body.getReader(); (async () => { try { while (!(await rd.read()).done); res(null); } catch { res(null); } })(); setTimeout(() => { srv.server.close(); srv.server.closeAllConnections(); }, 200); });
+    setTimeout(() => res('still connected after 3 s'), 3000);
+  }));
+}
+
 // ---------------------------------------------------------------- done
+endPart();
 try { await run(`await fetch('/api/lib/delete', { method: 'POST', body: JSON.stringify(['_selftest']) }); return 'ok';`); } catch {}
 try { process.kill(ctl.pid); } catch {} app.kill(); try { fs.unlinkSync(path.join(CTL_DIR, ctl.pid + '.json')); } catch {}
-const failed = results.filter(r => !r.ok).length;
-console.log(`\n${results.length - failed}/${results.length} passed, total ${results.reduce((s, r) => s + r.ms, 0)} ms`);
+const failed = results.filter(r => !r.ok);
+console.log(`SUITE: ${results.length - failed.length} passed, ${failed.length} failed  (${Math.round((Date.now() - suiteStart) / 1000)}s)`);
+for (const f of failed) console.log(`  FAILED: ${f.name}`);
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify({ at: new Date().toISOString(), exe: exe || 'source', results }, null, 2));
-process.exit(failed ? 1 : 0);
+process.exit(failed.length ? 1 : 0);

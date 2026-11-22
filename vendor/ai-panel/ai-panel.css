@@ -1,0 +1,94 @@
+/* The AI panel (ai-panel.js). Colours come only from the app's theme tokens (README.md lists them). Optional panel tokens,
+   with their defaults: --ai (the panel's highlight colour, var(--accent)), --ok ("Your turn", var(--accent)),
+   --on-primary (text on primary buttons, #fff), --ai-round (corner roundness: 1 = as drawn, 0 = square), --ai-font (the
+   font stack). Black see-through shadows are the only fixed colour. An app may also override any rule below in its own CSS. */
+#claudeDropdown .splitbtn button, #term button, #term select { font: 13px/1.3 var(--ai-font, system-ui, "Segoe UI", Roboto, sans-serif); color: var(--text); background: var(--ctl); border: 1px solid var(--ctl-border); border-radius: calc(5px * var(--ai-round, 1)); padding: 4px 9px; height: 28px; cursor: pointer; white-space: nowrap; }
+#claudeDropdown .splitbtn button:hover, #term button:hover { background: var(--ctl-hover); } /* (the ▾ menu's items keep the app's own .menu look) */
+#term button.primary { background: var(--primary); border-color: var(--primary-border); color: var(--on-primary, #fff); }
+#term button.primary:hover { background: var(--primary-hover); }
+#term { font: 13px/1.3 var(--ai-font, system-ui, "Segoe UI", Roboto, sans-serif); color: var(--text); }
+@keyframes aipulse { from { opacity: .3; } to { opacity: 1; } }
+.splitbtn { display: inline-flex; }
+.splitbtn #btnClaude { border-radius: calc(5px * var(--ai-round, 1)) 0 0 calc(5px * var(--ai-round, 1)); }
+.splitbtn #btnClaudeMenu { border-radius: 0 calc(5px * var(--ai-round, 1)) calc(5px * var(--ai-round, 1)) 0; border-left: 0; padding: 4px 7px; }
+#btnClaude.on, #btnClaude.on + #btnClaudeMenu { border-color: var(--ai, var(--accent)); }
+#btnClaude.pressed { background: color-mix(in srgb, var(--ai, var(--accent)) 32%, var(--ctl)); border-color: var(--ai, var(--accent)); box-shadow: inset 0 2px 4px rgba(0,0,0,.35); transform: translateY(1px); }
+.menu.right { left: auto; right: 0; } #claudeMenu { z-index: 35; } /* above the panel (28) */
+#claudeMenu .menu-sub { font-weight: 600; }
+/* a panel update is available: a dot on ▾, and the offer in the menu */
+#btnClaudeMenu { position: relative; }
+#btnClaudeMenu.has-update::after { content: ''; position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+#claudeMenu .ai-update { padding: 6px 8px; margin: 2px 0; border-radius: calc(6px * var(--ai-round, 1)); background: color-mix(in srgb, var(--accent) 12%, transparent); font-size: 12px; max-width: 320px; }
+#claudeMenu .ai-update-btns { display: flex; gap: 6px; margin: 6px 0 4px; }
+#claudeMenu .ai-update-btns button { width: auto; height: 26px; padding: 0 10px; border: 1px solid var(--ctl-border); border-radius: calc(5px * var(--ai-round, 1)); background: var(--ctl); color: var(--text); font: 12px var(--ai-font, system-ui, "Segoe UI", sans-serif); text-align: center; cursor: pointer; }
+#claudeMenu .ai-update-btns button.primary { background: var(--primary); border-color: var(--primary-border); color: var(--on-primary, #fff); }
+#claudeMenu .ai-update a { color: var(--accent); }
+#claudeMenu .menu-list { display: flex; flex-direction: column; margin: 2px 0 2px 14px; padding-left: 6px; border-left: 2px solid color-mix(in srgb, var(--ai, var(--accent)) 50%, transparent); }
+/* drop-down: over the top of the app, under the element the app names (`below`), or at --term-top */
+#term { position: fixed; left: 0; right: 0; top: var(--term-top, 78px); height: var(--term-h, 46vh); z-index: 28; display: flex; flex-direction: column; background: var(--panel); border-bottom: 2px solid var(--ai, var(--accent)); box-shadow: 0 14px 40px rgba(0,0,0,.45); }
+#term[hidden] { display: none; }
+.term-head { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--border); background: var(--title); font-size: 12px; }
+.term-head button { height: 24px; padding: 0 9px; font-size: 12px; }
+.term-head b { font-size: 13px; }
+.term-head .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#termCard { flex: 1; min-height: 0; margin: 8px 10px 0; padding: 10px 6px 6px 14px; border-radius: calc(12px * var(--ai-round, 1)); background: var(--field); border: 1px solid var(--border); display: flex; }
+#termHost { flex: 1; min-height: 0; min-width: 0; }
+#termHost .xterm-viewport { scrollbar-width: thin; }
+#termHost .xterm-viewport::-webkit-scrollbar { width: 8px; }
+#termHost .xterm-viewport::-webkit-scrollbar-thumb { border: 2px solid var(--field); border-radius: calc(4px * var(--ai-round, 1)); }
+.term-avatar { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--ai, var(--accent)), var(--accent)); font-size: 13px; flex: none; }
+.term-state { font-size: 11px; padding: 2px 9px; border-radius: calc(10px * var(--ai-round, 1)); background: var(--tint2); color: var(--muted); white-space: nowrap; }
+.term-state.busy { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.term-state.busy::before { content: '● '; animation: aipulse .8s infinite alternate; }
+.term-state.ask { background: color-mix(in srgb, var(--ai, var(--accent)) 22%, transparent); color: var(--text); }
+.term-state.ready { background: color-mix(in srgb, var(--ok, var(--accent)) 16%, transparent); color: var(--ok, var(--accent)); }
+#termCompose { display: flex; gap: 8px; align-items: flex-end; padding: 8px 10px 4px; }
+#termInput { flex: 1; resize: none; min-height: 38px; max-height: 160px; padding: 9px 12px; border-radius: calc(10px * var(--ai-round, 1)); border: 1px solid var(--ctl-border); background: var(--field); color: var(--text); font: 13px/1.4 var(--ai-font, system-ui, "Segoe UI", sans-serif); }
+#termInput:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
+#termSend { height: 38px; border-radius: calc(10px * var(--ai-round, 1)); padding: 0 14px; }
+#termChoices { display: flex; align-items: center; gap: 6px; padding: 8px 10px 0; flex-wrap: wrap; }
+#termOptions { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; min-width: 0; }
+#termOptions button { background: var(--ai, var(--primary)); border-color: var(--ai, var(--primary-border)); color: var(--on-primary, #fff); font-weight: 600; max-width: 340px; overflow: hidden; text-overflow: ellipsis; border-radius: calc(16px * var(--ai-round, 1)); padding: 0 14px; height: 30px; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+#termOptions button:hover { filter: brightness(1.15); background: var(--ai, var(--primary)); }
+#termOptions button.own { background: transparent; color: var(--text); border: 1px dashed var(--muted); box-shadow: none; font-weight: 500; }
+#termOptions button.own:hover { border-color: var(--accent); color: var(--accent); filter: none; }
+#termOptions .muted { font-size: 12px; }
+#termChoices > button { height: 26px; padding: 0 9px; border-radius: calc(13px * var(--ai-round, 1)); font-size: 12px; opacity: .8; }
+#termChoices > button:hover { opacity: 1; }
+#termGripSide { display: none; }
+#termGrip { height: 7px; cursor: ns-resize; background: linear-gradient(var(--border), var(--border)) center / 40px 3px no-repeat; }
+/* docked right: a full-height column. The widget sets body.termside and --term-w; the app makes room (README.md). */
+#term.side { top: var(--term-side-top, 44px); bottom: var(--term-side-bottom, 36px); left: auto; right: 6px; width: var(--term-w, 560px); height: auto; border: 2px solid var(--ai, var(--accent)); border-radius: calc(10px * var(--ai-round, 1)); box-shadow: 0 6px 24px rgba(0,0,0,.35); overflow: hidden; }
+#term.side #termGrip { display: none; }
+#term.side #termGripSide { display: block; position: absolute; left: 0; top: 0; bottom: 0; width: 8px; cursor: ew-resize; z-index: 2; }
+#term.side .term-head .muted { max-width: 40%; }
+/* float: a window you move by its title row and resize at its corner (position and size set by ai-panel.js) */
+#term.float { box-sizing: border-box; right: auto; bottom: auto;min-width: 360px; min-height: 240px; border: 2px solid var(--ai, var(--accent)); border-radius: calc(10px * var(--ai-round, 1)); box-shadow: 0 14px 40px rgba(0,0,0,.45); overflow: hidden; resize: both; z-index: 30; }
+#term.float .term-head { cursor: move; }
+#term.float .term-head button { cursor: pointer; }
+#term.float #termGrip { display: none; }
+#term.float #termCompose { padding-right: 18px; } /* room for the corner grip */
+/* "Where should it work?" */
+#termWs { position: absolute; inset: 0; z-index: 5; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); }
+#termWs[hidden] { display: none; }
+/* "Restart to use the update" popup: over the whole app, whether the panel is open or not */
+#aiRestart { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; background: rgba(0,0,0,.45); font: 13px/1.4 var(--ai-font, system-ui, "Segoe UI", Roboto, sans-serif); color: var(--text); }
+.ai-restart-box { width: min(420px, 92%); background: var(--panel); border: 1px solid var(--ai, var(--accent)); border-radius: calc(12px * var(--ai-round, 1)); padding: 16px 18px; box-shadow: 0 14px 40px rgba(0,0,0,.5); }
+.ai-restart-box h3 { margin: 0 0 8px; font-size: 15px; }
+.ai-restart-box p { margin: 0 0 8px; }
+.ai-restart-box .muted { color: var(--muted); }
+#aiRestart .grow { flex: 1; }
+#aiRestart button { font: inherit; color: var(--text); background: var(--ctl); border: 1px solid var(--ctl-border); border-radius: calc(5px * var(--ai-round, 1)); padding: 4px 12px; height: 30px; cursor: pointer; }
+#aiRestart button:hover { background: var(--ctl-hover); }
+#aiRestart button.primary { background: var(--primary); border-color: var(--primary-border); color: var(--on-primary, #fff); }
+#aiRestart button.primary:hover { background: var(--primary-hover); }
+.ws-box { width: min(460px, 92%); max-height: 90%; overflow: auto; background: var(--panel); border: 1px solid var(--ai, var(--accent)); border-radius: calc(12px * var(--ai-round, 1)); padding: 16px 18px; box-shadow: 0 14px 40px rgba(0,0,0,.5); }
+.ws-box h3 { margin: 0 0 6px; font-size: 15px; }
+.ws-box .hint { color: var(--muted); font-size: 12px; }
+#wsList { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 12px; }
+#wsList button { display: flex; flex-direction: column; align-items: flex-start; height: auto; padding: 7px 10px; text-align: left; border-radius: calc(8px * var(--ai-round, 1)); white-space: normal; }
+#wsList button b { font-size: 13px; }
+#wsList button small { color: var(--muted); font-size: 11px; word-break: break-all; }
+#wsList button.on { border-color: var(--ai, var(--accent)); background: color-mix(in srgb, var(--ai, var(--accent)) 22%, transparent); }
+.ws-btns { display: flex; gap: 6px; align-items: center; }
+#term .grow { flex: 1; }

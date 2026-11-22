@@ -45,8 +45,7 @@ function makeEditable(g) {
     let arr;
     if (toFloat) {
       arr = new Float32Array(n * s);
-      const get = ['getX', 'getY', 'getZ', 'getW'];
-      for (let i = 0; i < n; i++) for (let k = 0; k < s; k++) arr[i * s + k] = a[get[k]](i);
+      for (let i = 0; i < n; i++) for (let k = 0; k < s; k++) arr[i * s + k] = a[GETS[k]](i);
       g.setAttribute(name, new THREE.BufferAttribute(arr, s, false));
     } else {
       const src = a.data.array, stride = a.data.stride;
@@ -131,9 +130,13 @@ function toThreeClip(c) {
   for (const r of c.raw) tracks.push(r.clone());
   return new THREE.AnimationClip(c.name, c.duration, tracks);
 }
+/** extras.frameKeys {clip: [[t, frame], ...]} on the meshes under root -> clip.frames; a .glb clip is as long as its last joint key: frame keys may run longer. */
+function readFrameKeys(root, clips) {
+  root.traverse(o => { const fk = o.isMesh && o.userData.frameKeys; if (!fk) return; for (const [cn, keys] of Object.entries(fk)) { const c = clips.find(x => x.name === cn); if (c) { c.frames[o.name] = keys.map(([t, frame]) => ({ t, frame })); c.duration = Math.max(c.duration, ...keys.map(k => +k[0] || 0)); } } });
+}
 const cloneClip = c => ({ name: c.name, duration: c.duration, tracks: JSON.parse(JSON.stringify(c.tracks)), raw: c.raw.slice(), frames: JSON.parse(JSON.stringify(c.frames || {})) });
 
-const _invScratch = new Float32Array(16), GETS = ['getX', 'getY', 'getZ', 'getW']; // scratch for _vertexInv (called per point while dragging)
+const _invScratch = new Float32Array(16), GETS = ['getX', 'getY', 'getZ', 'getW']; // scratch for _vertexInv (called per point while dragging); GETS also used by makeEditable
 /** Release the GPU memory of everything under o (geometries, materials, textures, skeleton textures). */
 function disposeTree(o) {
   o.traverse(x => {
@@ -211,9 +214,9 @@ export class Editor extends EventTarget {
     this._depthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking, side: THREE.DoubleSide });
     // hover highlight: the point / line a click would pick right now
     this._hoverPt = new THREE.Points(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0], 3)),
-      new THREE.PointsMaterial({ size: this.pointSize + 7, sizeAttenuation: false, color: 0x4fc3f7, map: this._ptTex, alphaTest: 0.5, depthTest: false }));
+      new THREE.PointsMaterial({ size: this.pointSize + 7, sizeAttenuation: false, color: C.hover, map: this._ptTex, alphaTest: 0.5, depthTest: false }));
     this._hoverLine = new THREE.Line(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 3)),
-      new THREE.LineBasicMaterial({ color: 0x4fc3f7, depthTest: false }));
+      new THREE.LineBasicMaterial({ color: C.hover, depthTest: false }));
     for (const o of [this._hoverPt, this._hoverLine]) { o.visible = false; o.frustumCulled = false; o.renderOrder = 30; this.overlay.add(o); }
     this._wireMat = new THREE.LineBasicMaterial({ color: 0x0c0e10, transparent: true, opacity: 0.55 });
     this._selWireMat = new THREE.LineBasicMaterial({ color: 0xff8c1a });
@@ -248,7 +251,6 @@ export class Editor extends EventTarget {
     let i = 2; while (this.root.getObjectByName(`${base}_${i}`)) i++;
     return `${base}_${i}`;
   }
-  worldPos(o, t = new THREE.Vector3()) { return o.getWorldPosition(t); }
   _resize() {
     const w = this.container.clientWidth || 1, h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h); this.camera.aspect = w / h; this.camera.updateProjectionMatrix();
@@ -259,7 +261,7 @@ export class Editor extends EventTarget {
     this.scene.background = new THREE.Color(light ? 0xd9dce1 : 0x2b2d31);
     const vis = this.grid.visible; this.scene.remove(this.grid); this.grid.geometry.dispose(); this.grid.material.dispose();
     this.grid = new THREE.GridHelper(10, 20, light ? 0x8f96a3 : 0x5a5d63, light ? 0xb7bcc6 : 0x3a3d42); this.grid.visible = vis; this.scene.add(this.grid);
-    this.build?.setTheme?.(light); this.changed();
+    this.build.setTheme(light); this.changed();
   }
   /** Tabs: only the tab you look at draws itself every frame. */
   setActive(on) {
@@ -270,7 +272,7 @@ export class Editor extends EventTarget {
   }
   /** Closing a tab: free the GPU memory and stop everything this editor runs. */
   dispose() {
-    this.setActive(false); this.disposed = true; this.pause?.();
+    this.setActive(false); this.disposed = true; this.pause();
     try { this.gizmo.detach(); this.gizmo.dispose?.(); this.orbit.dispose(); } catch {}
     for (const c of [...this.root.children]) { c.removeFromParent(); disposeTree(c); }
     this.build?.dispose?.();
@@ -338,7 +340,7 @@ export class Editor extends EventTarget {
       this._finishGeometry(e.m, null);
     }
     if (s.geo) for (const e of s.geo) {
-      const old = e.m.geometry; e.m.geometry = e.g.clone(); makeEditable(e.m.geometry); if (old !== e.m.geometry) old.dispose();
+      const old = e.m.geometry; e.m.geometry = e.g.clone(); makeEditable(e.m.geometry); old.dispose();
       this._detached.set(e.m.geometry, new Set(e.det));
       this._finishGeometry(e.m, null);
     }
@@ -357,15 +359,16 @@ export class Editor extends EventTarget {
   }
 
   // ================= load / save =================
+  /** Where to fetch a model from: a full disk path (C:\…), a URL, or a library path. */
+  static srcUrl(src) { return /^[a-zA-Z]:[\\/]/.test(src) ? '/api/local?path=' + encodeURIComponent(src) : /^(\/|https?:|blob:|data:)/.test(src) ? src : '/api/lib/file?rel=' + encodeURIComponent(src); }
   async load(src, name) {
     let buf = src;
     this.libRel = null;
     if (typeof src === 'string') {
-      const isUrl = /^(\/|https?:|blob:|data:)/.test(src);
-      const url = isUrl ? src : '/api/lib/file?rel=' + encodeURIComponent(src);
-      if (!isUrl) this.libRel = src;
+      const url = Editor.srcUrl(src);
+      if (url.startsWith('/api/lib/file?rel=')) this.libRel = src;
       const res = await fetch(url); if (!res.ok) throw new Error('Fetch failed: ' + url);
-      buf = await res.arrayBuffer(); name ||= src.split('/').pop();
+      buf = await res.arrayBuffer(); name ||= src.split(/[\\/]/).pop();
     } else if (src instanceof Blob) { name ||= src.name; buf = await src.arrayBuffer(); }
     let gltf, bbReport = null;
     const head = new Uint8Array(buf, 0, Math.min(64, buf.byteLength)), firstChar = String.fromCharCode(...head).trimStart()[0];
@@ -385,7 +388,7 @@ export class Editor extends EventTarget {
       if (o.isMesh) { makeEditable(o.geometry); if (o.isSkinnedMesh) o.frustumCulled = false; }
     });
     this.clips = gltf.animations.map(fromThreeClip);
-    this.root.traverse(o => { const fk = o.isMesh && o.userData.frameKeys; if (!fk) return; for (const [clipName, keys] of Object.entries(fk)) { const c = this.clips.find(x => x.name === clipName); if (c) { c.frames[o.name] = keys.map(([t, frame]) => ({ t, frame })); c.duration = Math.max(c.duration, ...keys.map(k => +k[0] || 0)); } } }); // a .glb clip is as long as its last joint key: frame keys may run longer
+    readFrameKeys(this.root, this.clips);
     this.clipIndex = this.clips.length ? 0 : -1;
     this.fileName = (name || 'model.glb').replace(/\.gltf$/i, '.glb');
     this._rebuildAction();
@@ -409,7 +412,6 @@ export class Editor extends EventTarget {
     if (this.mode === 'build') this.setMode('object');
     this.clear(true); this.libRel = null; this.fileName = 'model.glb';
     this.build?.newDoc(name);
-    this.undoStack = []; this.redoStack = []; this._savedStep = null;
     this.view('persp'); this.changed();
     return this.msg('New project — open or build a model to start');
   }
@@ -423,13 +425,13 @@ export class Editor extends EventTarget {
   async importClips(src, { names = null, replace = true } = {}) {
     let buf, label = typeof src === 'string' ? src : src?.name;
     if (typeof src === 'string') {
-      const url = /^[a-zA-Z]:[\\/]/.test(src) ? '/api/local?path=' + encodeURIComponent(src) : /^(\/|https?:|blob:|data:)/.test(src) ? src : '/api/lib/file?rel=' + encodeURIComponent(src);
+      const url = Editor.srcUrl(src);
       const res = await fetch(url); if (!res.ok) throw new Error('Could not read ' + src); buf = await res.arrayBuffer();
     } else if (src instanceof Blob) buf = await src.arrayBuffer();
     else throw new Error('Give a .glb (library path, full path or File)');
     const gltf = await new Promise((res, rej) => this.loader.parse(buf, '', res, rej));
     const clips = gltf.animations.map(fromThreeClip);
-    gltf.scene.traverse(o => { const fk = o.isMesh && o.userData.frameKeys; if (!fk) return; for (const [cn, keys] of Object.entries(fk)) { const c = clips.find(x => x.name === cn); if (c) { c.frames[o.name] = keys.map(([t, frame]) => ({ t, frame })); c.duration = Math.max(c.duration, ...keys.map(k => +k[0] || 0)); } } });
+    readFrameKeys(gltf.scene, clips);
     if (!clips.length) throw new Error(`${label} has no animations`);
     const r = this._mergeClips(clips, { names, replace, label: 'Import clips' });
     this.msg(`Copied ${r.copied.length} clip${r.copied.length === 1 ? '' : 's'} from ${label}${r.skippedTracks.length ? ` (${r.skippedTracks.length} track${r.skippedTracks.length === 1 ? '' : 's'} skipped: no joint of that name here)` : ''}${r.frameKeys ? `, ${r.frameKeys} expression key${r.frameKeys === 1 ? '' : 's'}` : ''}`);
@@ -461,7 +463,6 @@ export class Editor extends EventTarget {
       if (this.clipIndex < 0 && this.clips.length) this.clipIndex = 0;
       this._rebuildAction(); if (this.animMode) this.setTime(this.time);
     });
-    this.changed();
     return report;
   }
   /** The clips as three.js AnimationClips (used by the watch page publisher). */
@@ -562,7 +563,6 @@ export class Editor extends EventTarget {
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     return this.msg('Downloaded ' + a.download);
   }
-  /** Save into the model library. dir: library folder ('' = top). Overwrites a file of the same name. */
   /** Clothing layers of the model (meshes made from slot__set parts): [{name, layer, visible, triangles}] — every mesh if none are tagged. */
   layers() {
     const a = []; this.root.traverse(o => { if (o.isMesh) a.push({ name: o.name, layer: o.userData.layer || null, visible: o.visible, triangles: (o.geometry.index ? o.geometry.index.count : o.geometry.attributes.position.count) / 3 }); });
@@ -585,8 +585,11 @@ export class Editor extends EventTarget {
     try { return await this.save(name, dir); }
     finally { others.forEach(x => x.parent.add(x.o)); keep.forEach((m, i) => { m.visible = vis[i]; }); Object.assign(this, was); this.changed(); }
   }
+  /** Library folder save() uses when none is given: the open file's folder ('' = top). */
+  _saveDir() { return this.libRel && this.libRel.includes('/') ? this.libRel.slice(0, this.libRel.lastIndexOf('/')) : ''; }
+  /** Save into the model library. dir: library folder ('' = top). Overwrites a file of the same name. */
   async save(name = this.fileName, dir) {
-    if (dir === undefined) dir = this.libRel && this.libRel.includes('/') ? this.libRel.slice(0, this.libRel.lastIndexOf('/')) : (this.libDir || '');
+    if (dir === undefined) dir = this._saveDir();
     if (!/\.glb$/i.test(name)) name += '.glb';
     const buf = await this.exportGLB();
     const res = await fetch(`/api/lib/file?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}&overwrite=1`, { method: 'PUT', body: buf });
@@ -829,10 +832,10 @@ export class Editor extends EventTarget {
     out.identity();
     if (mesh.isSkinnedMesh) {
       const g = mesh.geometry, si = g.attributes.skinIndex, sw = g.attributes.skinWeight, bm = mesh.skeleton.boneMatrices;
-      const e = _invScratch.fill(0), gets = GETS;
+      const e = _invScratch.fill(0);
       for (let k = 0; k < 4; k++) {
-        const w = sw[gets[k]](i); if (!w) continue;
-        const j = si[gets[k]](i);
+        const w = sw[GETS[k]](i); if (!w) continue;
+        const j = si[GETS[k]](i);
         for (let q = 0; q < 16; q++) e[q] += w * bm[j * 16 + q];
       }
       out.fromArray(e).premultiply(mesh.bindMatrixInverse).multiply(mesh.bindMatrix);
@@ -937,7 +940,7 @@ export class Editor extends EventTarget {
     const bones = this.allBones();
     let sticks = 0; for (const b of bones) for (const c of b.children) if (c.isBone) sticks++;
     if (!this._joints || bones.length > this._boneCap || sticks > this._stickCap) {
-      this._joints?.removeFromParent(); this._sticks?.removeFromParent();
+      for (const o of [this._joints, this._sticks]) { o?.removeFromParent(); o?.dispose(); }
       this._boneCap = Math.max(64, bones.length * 2); this._stickCap = this._boneCap * 2;
       this._joints = new THREE.InstancedMesh(this._jointGeo, this._jointMat, this._boneCap);
       this._sticks = new THREE.InstancedMesh(this._stickGeo, this._stickMat, this._stickCap);
@@ -972,7 +975,7 @@ export class Editor extends EventTarget {
   }
   _updateBoxHelpers() {
     const want = this.mode === 'object' ? this.sel.meshes : [];
-    while (this._boxHelpers.length > want.length) this._boxHelpers.pop().removeFromParent();
+    while (this._boxHelpers.length > want.length) { const h = this._boxHelpers.pop(); h.removeFromParent(); h.geometry.dispose(); h.material.dispose(); }
     want.forEach((m, i) => {
       if (!this._boxHelpers[i]) { const h = new THREE.BoxHelper(m, 0xff8c1a); this.overlay.add(h); this._boxHelpers[i] = h; }
       this._boxHelpers[i].setFromObject(m);
@@ -1034,7 +1037,7 @@ export class Editor extends EventTarget {
       if (sl) {
         const rest = new THREE.Vector3().fromArray(sl.rest), ax = new THREE.Vector3().fromArray(sl.axis);
         const off = THREE.MathUtils.clamp(d.bone.position.clone().sub(rest).dot(ax), sl.min, sl.max);
-        d.bone.position.copy(rest).addScaledVector(ax, off); if (sl.restQ) d.bone.quaternion.fromArray(sl.restQ); else { d.slideQ ||= d.bone.quaternion.clone(); d.bone.quaternion.copy(d.slideQ); } // never turns d.bone.scale.set(1, 1, 1);
+        d.bone.position.copy(rest).addScaledVector(ax, off); if (sl.restQ) d.bone.quaternion.fromArray(sl.restQ); else { d.slideQ ||= d.bone.quaternion.clone(); d.bone.quaternion.copy(d.slideQ); } // never turns
       }
       if (d.kids) { d.bone.updateMatrixWorld(true); for (const k of d.kids) this._setWorldMatrix(k.c, k.m); }
       if (d.rest) this._applyRestEdit(d.rest);
@@ -1320,18 +1323,7 @@ export class Editor extends EventTarget {
   fitSkeleton() {
     this._requireRest();
     const defs = fitDefs(this);
-    return this._op('Fit skeleton', { rig: true }, () => {
-      const made = {}, arm = this.armature();
-      for (const [n, parent, p] of defs) {
-        const par = parent ? made[parent] : arm;
-        const b = new THREE.Bone(); b.name = this.uniqueName(n); made[n] = b;
-        par.add(b); par.updateMatrixWorld(true);
-        b.position.copy(par.worldToLocal(new THREE.Vector3().fromArray(p))); b.updateMatrixWorld(true);
-      }
-      this.sel.bones = [made.Hips]; this._syncGizmo();
-      this.msg(`Skeleton fitted to the model (${defs.length} joints). Check the joints, then Bind.`);
-      return made.Hips.name;
-    });
+    return this._op('Fit skeleton', { rig: true }, () => this._makeBones(defs, `Skeleton fitted to the model (${defs.length} joints). Check the joints, then Bind.`));
   }
   /** Make (or replace) a looping walk animation on a humanoid skeleton. opts: see autorig.makeWalk. */
   makeWalk(opts = {}) {
@@ -1372,18 +1364,20 @@ export class Editor extends EventTarget {
         [`Foot_${s}`, `LowerLeg_${s}`, P(sx * 0.055 * h, 0.05)], [`Toe_${s}`, `Foot_${s}`, P(sx * 0.055 * h, 0.0, 0.07)],
       );
     }
-    return this._op('Stick figure', { rig: true }, () => {
-      const made = {}, arm = this.armature();
-      for (const [n, parent, p] of defs) {
-        const par = parent ? made[parent] : arm;
-        const b = new THREE.Bone(); b.name = this.uniqueName(n); made[n] = b;
-        par.add(b); par.updateMatrixWorld(true);
-        b.position.copy(par.worldToLocal(new THREE.Vector3().fromArray(p))); b.updateMatrixWorld(true);
-      }
-      this.sel.bones = [made.Hips]; this._syncGizmo();
-      this.msg(`Stick figure added (${defs.length} joints${tpose ? ', T-pose' : ', arms down'}). Adjust joints in Bone mode, then Bind.`);
-      return made.Hips.name;
-    });
+    return this._op('Stick figure', { rig: true }, () => this._makeBones(defs, `Stick figure added (${defs.length} joints${tpose ? ', T-pose' : ', arms down'}). Adjust joints in Bone mode, then Bind.`));
+  }
+  /** defs = [[name, parentName|null, [x,y,z] world]] (parents first) -> bones under the armature; picks Hips, returns its name. */
+  _makeBones(defs, message) {
+    const made = {}, arm = this.armature();
+    for (const [n, parent, p] of defs) {
+      const par = parent ? made[parent] : arm;
+      const b = new THREE.Bone(); b.name = this.uniqueName(n); made[n] = b;
+      par.add(b); par.updateMatrixWorld(true);
+      b.position.copy(par.worldToLocal(new THREE.Vector3().fromArray(p))); b.updateMatrixWorld(true);
+    }
+    this.sel.bones = [made.Hips]; this._syncGizmo();
+    this.msg(message);
+    return made.Hips.name;
   }
   /** Move a joint. Edit mode: changes the rest pose (mesh stays put). Animate mode: poses it. */
   setBonePosition(name, p, space = 'world') {
@@ -1398,10 +1392,6 @@ export class Editor extends EventTarget {
     const b = this.bone(name);
     return this._boneEdit(b, () => b.rotation.set(...deg.map(THREE.MathUtils.degToRad)), 'quaternion');
   }
-  setBoneScale(name, s) {
-    const b = this.bone(name);
-    return this._boneEdit(b, () => b.scale.set(...(Array.isArray(s) ? s : [s, s, s])), 'scale');
-  }
   _boneEdit(b, fn, prop) {
     return this._op(this.animMode ? 'Pose bone' : 'Move joint', { rig: true, anim: true }, () => {
       const rest = this.animMode ? null : this._beginRestEdit();
@@ -1413,7 +1403,6 @@ export class Editor extends EventTarget {
       return arr3(b.getWorldPosition(new THREE.Vector3()));
     });
   }
-  renameBone(oldName, newName) { return this.rename(oldName, newName); }
   rename(oldName, newName) {
     const o = this.obj(oldName); if (!o) throw new Error('Not found: ' + oldName);
     newName = THREE.PropertyBinding.sanitizeNodeName(newName);
@@ -1471,7 +1460,7 @@ export class Editor extends EventTarget {
     const out = []; this._container(start).traverse(o => { if (o.isBone) out.push(o); });
     return out;
   }
-  /** Skin meshes to the skeleton with automatic weights (distance to bone segments). */
+  /** Skin meshes to the skeleton with automatic weights (measured along the surface; opts.method 'distance' = straight distance to bone segments). */
   bind(opts = {}) {
     this._requireRest();
     const bones = opts.bones ? opts.bones.map(x => this.bone(x)) : this._rigBones();
@@ -1722,7 +1711,7 @@ export class Editor extends EventTarget {
    * Paint the picked area into the model's texture: every face whose corners are all picked gets the colour.
    * keep (0..1) = how much of the old texture's light and dark detail shows through (folds, shading).
    * rim = width in texture pixels of a darker seam drawn round the edge of the painted area (0 = none).
-   * opts: { color='#7b4f33', keep=0.55, rim=0, rimColor, meshName }
+   * opts: { color='#7b4f33', keep=0.55, rim=0, rimColor }
    */
   paintFaces({ color = '#7b4f33', keep = 0.55, rim = 0, rimColor } = {}) {
     const sel = this.selectedPoints();
@@ -1760,10 +1749,7 @@ export class Editor extends EventTarget {
         for (const [key, [o, i]] of count) if (i && o) { const [a, b] = uvOf.get(key); x.beginPath(); x.moveTo(...a); x.lineTo(...b); x.stroke(); }
       }
       x.restore();
-      const tex = old.clone(); tex.source = new THREE.Source(cv); tex.needsUpdate = true; // own picture: clone() shares the old one
-      const put = m => () => { mats.forEach(mt => { if (mt.map === old || mt.map === tex) { mt.map = m; mt.needsUpdate = true; } }); };
-      put(tex)();
-      this._pushUndo('Paint', put(old), put(tex));
+      this._putPaintedTexture(mats, old, cv, 'Paint');
       out.push(`${mesh.name}: painted ${faces.length} face(s)`);
     }
     this.changed();
@@ -1833,13 +1819,17 @@ export class Editor extends EventTarget {
       }
     }
     x.putImageData(img, 0, 0);
-    const tex = old.clone(); tex.source = new THREE.Source(cv); tex.needsUpdate = true; // own picture: clone() shares the old one
-    const put = m => () => { mats.forEach(mt => { if (mt.map === old || mt.map === tex) { mt.map = m; mt.needsUpdate = true; } }); };
-    put(tex)();
-    this._pushUndo('Paint stroke', put(old), put(tex));
+    this._putPaintedTexture(mats, old, cv, 'Paint stroke');
     this.changed();
     this.msg(`Painted a stroke (${painted} texels)`);
     return painted;
+  }
+  /** Swap the texture old for a copy showing canvas cv on every material in mats, as one undo step. */
+  _putPaintedTexture(mats, old, cv, label) {
+    const tex = old.clone(); tex.source = new THREE.Source(cv); tex.needsUpdate = true; // own picture: clone() shares the old one
+    const put = m => () => { mats.forEach(mt => { if (mt.map === old || mt.map === tex) { mt.map = m; mt.needsUpdate = true; } }); };
+    put(tex)();
+    this._pushUndo(label, put(old), put(tex));
   }
   /** Per-point weights of a skinned mesh as dense rows (one number per skeleton bone). */
   _weightRows(mesh, t) {
@@ -1908,31 +1898,15 @@ export class Editor extends EventTarget {
     return this._op('Delete faces', { geo: meshes }, () => {
       let removed = 0;
       for (const mesh of meshes) {
-        const g = mesh.geometry, t = this.topo(mesh), P = t.points.length;
+        const t = this.topo(mesh), P = t.points.length;
         const pset = sel.get(mesh), ekeys = this.mode === 'edge' ? this.sel.edges.get(mesh) : null;
-        const kill = (a, b, c) => {
+        const kill = (f, a, b, c) => {
           const pa = t.pointOf[a], pb = t.pointOf[b], pc = t.pointOf[c];
           if (!ekeys) return pset.has(pa) || pset.has(pb) || pset.has(pc);
           const k = (p, q) => p < q ? p * P + q : q * P + p;
           return ekeys.has(k(pa, pb)) || ekeys.has(k(pb, pc)) || ekeys.has(k(pc, pa));
         };
-        const idx = ensureIndex(g).array;
-        const groups = g.groups.length ? g.groups.map(x => ({ ...x })) : [{ start: 0, count: idx.length, materialIndex: 0 }];
-        const out = [], ng = [];
-        for (const gr of groups) {
-          const start = out.length;
-          for (let c = gr.start; c < Math.min(gr.start + gr.count, idx.length); c += 3) {
-            if (kill(idx[c], idx[c + 1], idx[c + 2])) { removed++; continue; }
-            out.push(idx[c], idx[c + 1], idx[c + 2]);
-          }
-          ng.push({ start, count: out.length - start, materialIndex: gr.materialIndex });
-        }
-        g.setIndex(new THREE.BufferAttribute(Uint32Array.from(out), 1));
-        const had = g.groups.length; g.clearGroups(); if (had) ng.forEach(x => g.addGroup(x.start, x.count, x.materialIndex));
-        const remap = compactGeometry(g); // remove the points that no face uses any more
-        if (remap) { const nd = new Set(); for (const v of this._det(g)) if (remap[v] >= 0) nd.add(remap[v]); this._detached.set(g, nd); }
-        this._invalidateTopo(mesh); g.computeBoundingBox(); g.computeBoundingSphere();
-        if (mesh.isSkinnedMesh) { mesh.boundingBox = null; mesh.boundingSphere = null; }
+        removed += this._removeFaces(mesh, kill, true); // rebuild even when no face went: picked points without faces are dropped too
       }
       this._clearPointSel(); this._syncGizmo();
       return this.msg(`Deleted ${removed} face(s) and the points they left behind`);
@@ -1941,8 +1915,9 @@ export class Editor extends EventTarget {
   /**
    * Remove faces from a mesh (no undo of its own: call inside _op). kill(faceIndex, a, b, c) -> true to remove,
    * where a/b/c are vertex indices. Points no face uses any more are dropped too. Returns how many faces went.
+   * always: rebuild the geometry even if no face went (deleteFaces relies on it).
    */
-  _removeFaces(mesh, kill) {
+  _removeFaces(mesh, kill, always = false) {
     const g = mesh.geometry, idx = ensureIndex(g).array;
     const groups = g.groups.length ? g.groups.map(x => ({ ...x })) : [{ start: 0, count: idx.length, materialIndex: 0 }];
     const out = [], ng = []; let removed = 0;
@@ -1954,7 +1929,7 @@ export class Editor extends EventTarget {
       }
       ng.push({ start, count: out.length - start, materialIndex: gr.materialIndex });
     }
-    if (!removed) return 0;
+    if (!removed && !always) return 0;
     g.setIndex(new THREE.BufferAttribute(Uint32Array.from(out), 1));
     const had = g.groups.length; g.clearGroups(); if (had) ng.forEach(x => g.addGroup(x.start, x.count, x.materialIndex));
     const remap = compactGeometry(g);
@@ -2074,8 +2049,8 @@ export class Editor extends EventTarget {
   setTime(t) {
     const c = this.clip;
     this.time = Math.max(0, c ? Math.min(t, c.duration) : t);
-    if (this.animMode && this._action) { this._action.reset(); this.mixer.setTime(this.time); this.root.updateMatrixWorld(true); }
-    if (this.animMode) this._applyFrameKeys(); // reset: with Loop off a clip that reached its end is 'finished' and would ignore the new time
+    if (this.animMode && this._action) { this._action.reset(); this.mixer.setTime(this.time); this.root.updateMatrixWorld(true); } // reset: with Loop off a clip that reached its end is 'finished' and would ignore the new time
+    if (this.animMode) this._applyFrameKeys();
     this.dispatchEvent(new Event('time'));
   }
   play() { if (!this.animMode) this.setAnimMode(true); if (this.clip && this.time >= this.clip.duration - 1e-6 && !this.loop) this.time = 0; this.playing = true; this.changed(); }

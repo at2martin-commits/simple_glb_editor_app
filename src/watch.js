@@ -44,14 +44,16 @@ export function initWatch(ed) { // one feed per tab: ed.watchInfo() = {key, labe
     };
   }
   const info = () => ed.watchInfo?.() || { key: 'main', label: '', claude: false, active: true };
-  const timer = setInterval(() => {
-    if (ed.disposed) { clearInterval(timer); fetch('/api/watch/state?tab=' + encodeURIComponent(info().key), { method: 'POST', body: '{"gone":true}' }).catch(() => {}); return; } // tab closed
+  const tick = () => {
+    if (ed.disposed) { clearInterval(timer); window.watchTicks?.delete(tick); fetch('/api/watch/state?tab=' + encodeURIComponent(info().key), { method: 'POST', body: '{"gone":true}' }).catch(() => {}); return; } // tab closed
     if (viewers && !busy && editVer !== sentVer && performance.now() - lastSceneAt > 350) publishScene(); // nobody watching = no export
     const w = info(), s = { ...state(), label: w.label, claude: w.claude, active: w.active }, key = JSON.stringify({ ...s, time: s.playing ? 0 : s.time }); // while playing the page keeps time itself
     if (key !== lastState || performance.now() - lastPing > 2000) { // also asks every 2 s whether anyone is watching
       lastState = key; lastPing = performance.now();
       fetch('/api/watch/state?tab=' + encodeURIComponent(w.key), { method: 'POST', body: JSON.stringify(s) }).then(r => r.json()).then(j => { viewers = j.viewers || 0; }).catch(() => {});
     }
-  }, 250);
+  };
+  const timer = setInterval(tick, 250);
+  (window.watchTicks ||= new Set()).add(tick); window.watchKick ||= () => { for (const f of window.watchTicks) f(); }; // main.js: a viewer arrived
   return { bump };
 }

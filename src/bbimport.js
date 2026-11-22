@@ -12,12 +12,13 @@ import * as THREE from 'three';
 const U = 1 / 16;
 const FPS = 24;
 const D2R = Math.PI / 180;
-const eulerQ = r => new THREE.Quaternion().setFromEuler(new THREE.Euler((+r?.[0] || 0) * D2R, (+r?.[1] || 0) * D2R, (+r?.[2] || 0) * D2R, 'ZYX'));
-const pivotM = (origin, rot) => { // rotate about a pivot: T(o) R T(-o)
+export const eulerQ = r => new THREE.Quaternion().setFromEuler(new THREE.Euler((+r?.[0] || 0) * D2R, (+r?.[1] || 0) * D2R, (+r?.[2] || 0) * D2R, 'ZYX'));
+export const pivotM = (origin, rot) => { // rotate about a pivot: T(o) R T(-o)
   const o = new THREE.Vector3().fromArray(origin || [0, 0, 0]);
   return new THREE.Matrix4().makeTranslation(o.x, o.y, o.z).multiply(new THREE.Matrix4().makeRotationFromQuaternion(eulerQ(rot))).multiply(new THREE.Matrix4().makeTranslation(-o.x, -o.y, -o.z));
 };
 const hasRot = r => !!r && r.some(v => Math.abs(+v || 0) > 1e-9);
+export const round4 = v => Math.round(v * 1e4) / 1e4; // (unlike build.js r4, -0 stays -0)
 
 async function loadImage(src) {
   const img = new Image();
@@ -29,7 +30,7 @@ async function loadImage(src) {
 
 // Corners of each cube face as [x-from/to, y, z] picks (0 = from, 1 = to), in the order
 // top-left, top-right, bottom-right, bottom-left as seen from outside, matching the face's uv [u1,v1]..[u2,v2].
-const FACES = {
+export const FACES = {
   north: { n: [0, 0, -1], c: [[1, 1, 0], [0, 1, 0], [0, 0, 0], [1, 0, 0]] },
   south: { n: [0, 0, 1], c: [[0, 1, 1], [1, 1, 1], [1, 0, 1], [0, 0, 1]] },
   east: { n: [1, 0, 0], c: [[1, 1, 1], [1, 1, 0], [1, 0, 0], [1, 0, 1]] },
@@ -39,8 +40,38 @@ const FACES = {
 };
 
 /**
+ * One plane {axis, sign, plane, ua, va, rects: [[u0, u1, v0, v1, colour]]} cut into cells along every rect / blocker
+ * edge (shared with build.js boxSurface). Boxes ({min, max}) right in front of the plane hide the cells they cover (-1).
+ * Returns null when there are no cells, else {Us, Vs, nu, nv, cols, cell (0 = nothing, else colour index + 1), hidden}.
+ */
+export function planeCells(pl, boxes) {
+  const R = round4;
+  let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+  for (const r of pl.rects) { u0 = Math.min(u0, r[0]); u1 = Math.max(u1, r[1]); v0 = Math.min(v0, r[2]); v1 = Math.max(v1, r[3]); }
+  const front = pl.plane + pl.sign * 1e-3, blockers = [];
+  for (const bx of boxes) {
+    if (bx.min[pl.axis] > front || bx.max[pl.axis] < front) continue;
+    const r = [Math.max(u0, R(bx.min[pl.ua])), Math.min(u1, R(bx.max[pl.ua])), Math.max(v0, R(bx.min[pl.va])), Math.min(v1, R(bx.max[pl.va]))];
+    if (r[0] < r[1] && r[2] < r[3]) blockers.push(r);
+  }
+  const all = pl.rects.concat(blockers);
+  const Us = [...new Set(all.flatMap(r => [r[0], r[1]]))].sort((a, b) => a - b);
+  const Vs = [...new Set(all.flatMap(r => [r[2], r[3]]))].sort((a, b) => a - b);
+  const ui = new Map(Us.map((v, i) => [v, i])), vi = new Map(Vs.map((v, i) => [v, i]));
+  const nu = Us.length - 1, nv = Vs.length - 1; if (nu < 1 || nv < 1) return null;
+  const cols = [], colIdx = new Map(), cell = new Int32Array(nu * nv);
+  for (const r of pl.rects) {
+    let c = colIdx.get(r[4]); if (c === undefined) { c = cols.length + 1; cols.push(r[4]); colIdx.set(r[4], c); }
+    for (let j = vi.get(r[2]); j < vi.get(r[3]); j++) for (let i = ui.get(r[0]); i < ui.get(r[1]); i++) cell[j * nu + i] = c;
+  }
+  let hidden = 0;
+  for (const r of blockers) for (let j = vi.get(r[2]); j < vi.get(r[3]); j++) for (let i = ui.get(r[0]); i < ui.get(r[1]); i++) { if (cell[j * nu + i] > 0) hidden++; cell[j * nu + i] = -1; }
+  return { Us, Vs, nu, nv, cols, cell, hidden };
+}
+
+/**
  * Turn a parsed .bbmodel into { scene, animations, report } (a glTF-like result the editor can load).
- * opts: { name }
+ * opts: { name, layers (false = no clothing layers), cullBetweenBones (also hide faces pressed against another bone) }
  */
 export async function importBlockbench(bb, opts = {}) {
   const report = { cubes: 0, meshes: 0, locators: 0, facesIn: 0, hidden: 0, culled: 0, merged: 0, trianglesOut: 0, bones: 0, animations: 0, notes: [] };
@@ -103,8 +134,7 @@ export async function importBlockbench(bb, opts = {}) {
   // becomes its own mesh on the shared skeleton, and faces are only hidden / merged against parts of the SAME bone AND layer,
   // so the body stays whole under clothes that can be switched off. opts.layers === false merges everything as before.
   const layerOf = name => { if (opts.layers === false) return ''; const q = String(name || '').split('__'); return q.length >= 3 && q[0] && q[1] ? `${q[0]}__${q[1]}` : ''; };
-  const grpCache = new Map(), gk = (bone, layer) => { const k = (boneIndexPre.get(bone) ?? -1) + '|' + layer; if (!grpCache.has(k)) grpCache.set(k, { bone, layer }); return grpCache.get(k); };
-  const boneIndexPre = new Map(bones.map((bn, i) => [bn, i]));
+  const grpCache = new Map(), gk = (bone, layer) => { const k = (boneIndex.get(bone) ?? -1) + '|' + layer; if (!grpCache.has(k)) grpCache.set(k, { bone, layer }); return grpCache.get(k); };
   for (const el of bb.elements || []) {
     if (el.glb_collider) { const owner = elemOwner.get(el.uuid); if (owner) colliders.push({ el, owner }); continue; }
     if (el.export === false) continue;
@@ -201,9 +231,11 @@ export async function importBlockbench(bb, opts = {}) {
     const n = new THREE.Vector3().subVectors(f.P[1], f.P[0]).cross(new THREE.Vector3().subVectors(f.P[3], f.P[0])).normalize();
     const eps = n.clone().multiplyScalar(0.01);
     let covered = true;
-    for (const a of [0.08, 0.5, 0.92]) for (const b of [0.08, 0.5, 0.92]) { // a 3x3 grid of spots just outside the face
-      const top = f.P[0].clone().lerp(f.P[1], a), bot = f.P[3].clone().lerp(f.P[2], a), p = top.lerp(bot, b).add(eps);
-      if (!insideOther(p, f.grp, f.cube)) { covered = false; break; }
+    for (const a of [0.08, 0.5, 0.92]) { // a 3x3 grid of spots just outside the face
+      for (const b of [0.08, 0.5, 0.92]) {
+        const top = f.P[0].clone().lerp(f.P[1], a), bot = f.P[3].clone().lerp(f.P[2], a), p = top.lerp(bot, b).add(eps);
+        if (!insideOther(p, f.grp, f.cube)) { covered = false; break; }
+      }
       if (!covered) break;
     }
     if (covered) report.culled++; else kept.push(f);
@@ -213,7 +245,7 @@ export async function importBlockbench(bb, opts = {}) {
   // Each plane is cut into cells along every face / neighbour edge; a cell shows the face's colour unless a cube of the
   // same bone sits right in front of it (then that part is hidden, even when the rest of the face shows).
   const out = [];
-  const planes = new Map(), R = v => Math.round(v * 1e4) / 1e4;
+  const planes = new Map(), R = round4;
   for (const f of kept) {
     if (!f.flat || !f.mergeable || f.P.length !== 4) { out.push(f); continue; }
     const nrm = FACES[f.side].n, axis = nrm[0] ? 0 : nrm[1] ? 1 : 2, sign = nrm[axis];
@@ -228,28 +260,11 @@ export async function importBlockbench(bb, opts = {}) {
   let facesToMerge = 0, quadsOut = 0, cellsHidden = 0;
   for (const pl of planes.values()) {
     facesToMerge += pl.rects.length;
-    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-    for (const r of pl.rects) { u0 = Math.min(u0, r[0]); u1 = Math.max(u1, r[1]); v0 = Math.min(v0, r[2]); v1 = Math.max(v1, r[3]); }
-    // same-bone cubes right in front of this plane
-    const front = pl.plane + pl.sign * 1e-3, blockers = [];
-    for (const bx of (opts.cullBetweenBones ? allStraight.get(pl.layer) : straightByBone.get(pl.grp)) || []) { // opts.cullBetweenBones: also hide faces pressed against another bone (they can open up when a joint bends)
-      if (bx.min[pl.axis] > front || bx.max[pl.axis] < front) continue;
-      const r = [Math.max(u0, R(bx.min[pl.ua])), Math.min(u1, R(bx.max[pl.ua])), Math.max(v0, R(bx.min[pl.va])), Math.min(v1, R(bx.max[pl.va]))];
-      if (r[0] < r[1] && r[2] < r[3]) blockers.push(r);
-    }
-    const all = pl.rects.concat(blockers);
-    const Us = [...new Set(all.flatMap(r => [r[0], r[1]]))].sort((a, b) => a - b);
-    const Vs = [...new Set(all.flatMap(r => [r[2], r[3]]))].sort((a, b) => a - b);
-    const ui = new Map(Us.map((v, i) => [v, i])), vi = new Map(Vs.map((v, i) => [v, i]));
-    const nu = Us.length - 1, nv = Vs.length - 1; if (nu < 1 || nv < 1) continue;
-    const cols = [], colIdx = new Map(), cell = new Int32Array(nu * nv); // 0 = nothing, else colour index + 1
-    for (const r of pl.rects) {
-      let c = colIdx.get(r[4]); if (c === undefined) { c = cols.length + 1; cols.push(r[4]); colIdx.set(r[4], c); }
-      for (let j = vi.get(r[2]); j < vi.get(r[3]); j++) for (let i = ui.get(r[0]); i < ui.get(r[1]); i++) cell[j * nu + i] = c;
-    }
-    // cells with a same-bone cube right in front are hidden for good: a quad may run across them (DC = "don't care")
+    // same-bone cubes right in front of this plane (opts.cullBetweenBones: also faces pressed against another bone, which can open up when a joint bends)
+    const pc = planeCells(pl, (opts.cullBetweenBones ? allStraight.get(pl.layer) : straightByBone.get(pl.grp)) || []); if (!pc) continue;
+    const { Us, Vs, nu, nv, cols, cell } = pc; cellsHidden += pc.hidden;
+    // cells with a same-bone cube right in front are hidden for good (-1): a quad may run across them (DC = "don't care")
     const DC = -1;
-    for (const r of blockers) for (let j = vi.get(r[2]); j < vi.get(r[3]); j++) for (let i = ui.get(r[0]); i < ui.get(r[1]); i++) { if (cell[j * nu + i] > 0) cellsHidden++; cell[j * nu + i] = DC; }
     const corner = (u, v) => { const p = new THREE.Vector3(); p.setComponent(pl.axis, pl.plane); p.setComponent(pl.ua, u); p.setComponent(pl.va, v); return p; };
     // greedy cover, tried along u first and along v first; keep whichever needs fewer quads
     const cover = vFirst => {
@@ -352,7 +367,6 @@ export async function importBlockbench(bb, opts = {}) {
     skeleton = new THREE.Skeleton(bones);
   }
   report.vertices = 0; report.trianglesOut = 0; report.layers = [];
-  let mesh = null;
   for (const layer of layerNames.length ? layerNames : ['']) {
     const mine = out.filter(f => (f.layer || '') === layer), built = buildGeometry(mine), fr = mine.find(f => f.framed)?.framed, frFace = mine.find(f => f.framed);
     const m = skeleton ? new THREE.SkinnedMesh(built.g, mat) : new THREE.Mesh(built.g, mat);
@@ -369,7 +383,6 @@ export async function importBlockbench(bb, opts = {}) {
     if (skeleton) { scene.updateMatrixWorld(true); m.bind(skeleton, new THREE.Matrix4()); m.frustumCulled = false; }
     report.vertices += built.verts; report.trianglesOut += built.tris;
     if (hasLayers) report.layers.push({ name: m.name, triangles: built.tris });
-    if (!mesh) mesh = m;
   }
 
   // ---------------- attach points (locators) as empty nodes under their bone

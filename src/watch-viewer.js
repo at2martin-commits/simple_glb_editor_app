@@ -6,8 +6,6 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 const $ = s => document.querySelector(s);
-const key = new URLSearchParams(location.search).get('k') || '';
-const withKey = u => (key ? `${u}${u.includes('?') ? '&' : '?'}k=${encodeURIComponent(key)}` : u);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -42,7 +40,7 @@ async function loadScene(ver) {
   if (loading) { wantVer = ver; return; }
   loading = true; const forTab = curTab;
   try {
-    const res = await fetch(withKey(`/api/watch/scene?tab=${encodeURIComponent(curTab || 'follow')}&v=${ver}`), { cache: 'no-store' });
+    const res = await fetch(`/api/watch/scene?tab=${encodeURIComponent(curTab || 'follow')}&v=${ver}`, { cache: 'no-store' });
     if (res.status === 204) { loadedVer = ver; return; }
     if (!res.ok) throw new Error(res.status);
     const buf = await res.arrayBuffer(), gltf = await new Promise((ok, no) => loader.parse(buf, '', ok, no));
@@ -86,7 +84,7 @@ function renderPicker(d) {
 }
 function connect() {
   es?.close();
-  es = new EventSource(withKey('/api/watch/events?tab=' + encodeURIComponent(pick)));
+  es = new EventSource('/api/watch/events?tab=' + encodeURIComponent(pick));
   es.onopen = () => { $('#live').textContent = 'Live'; $('#live').classList.add('on'); };
   es.onmessage = e => {
     const d = JSON.parse(e.data); renderPicker(d);

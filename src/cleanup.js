@@ -57,8 +57,8 @@ function segHitsTri(W, p0, p1, a, b, c) {
 // ------------------------------------------------------------------ planning
 /**
  * Work out what Clean up would do at this strength, without changing anything.
- * Returns { strength, meshes: [{ mesh, moves: Map(pid->Vector3), weldPids:Set, killFaces:Set, preview:Map(pid->Color),
- *           counts }], totals, notes }.
+ * Returns { strength, settings, meshes: [{ mesh, moves: Map(pid->Vector3), killFaces:Set, preview:Map(pid->Color),
+ *           counts, H (model height) }], totals, notes }.
  */
 export function planCleanup(ed, strength) {
   const S = cleanupSettings(strength), plans = [], notes = [];
@@ -136,7 +136,7 @@ export function planCleanup(ed, strength) {
       const sorted = [...comps.values()].sort((x, y) => y.length - x.length);
       const triOf = new Map(); sorted.forEach((comp, ci) => comp.forEach(f => triOf.set(f, ci)));
       const allTris = alive.map(f => { const [A, B, C] = R(f).map(p => V().fromArray(W, p * 3)); return { ci: triOf.get(f), A, B, C }; });
-      const tgrid = new TriGrid(allTris, Math.min(96, Math.max(16, Math.round(Math.cbrt(allTris.length) * 2))));
+      const tgrid = new TriGrid(allTris);
       const dirs = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]].map(d => V().fromArray(d));
       for (const [ci, comp] of sorted.entries()) {
         if (ci === 0) continue;
@@ -167,7 +167,7 @@ export function planCleanup(ed, strength) {
     // edge -> its two faces
     const edgeFaces = new Map();
     for (const f of faces) { const [a, b, c] = R(f); for (const [p, q] of [[a, b], [b, c], [c, a]]) { const k = p < q ? p + ',' + q : q + ',' + p; (edgeFaces.get(k) || edgeFaces.set(k, []).get(k)).push(f); } }
-    const fn = new Map(), n1 = V(), n2 = V();
+    const n1 = V(), n2 = V();
     const faceNormal = f => { const [a, b, c] = R(f); return triNormal(W, a, b, c, V()).normalize(); };
     const foldsAt = (p, dot = S.foldDot) => { // folds among the faces around point p
       let n = 0; const fs = [...(around.get(p) || [])];

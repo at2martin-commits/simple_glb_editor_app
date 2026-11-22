@@ -16,7 +16,7 @@ for (const pkg of ['three-mesh-bvh', 'three-bvh-csg']) {
   fs.copyFileSync(path.join(from, 'LICENSE'), path.join(to, 'LICENSE'));
   console.log(pkg, 'vendored to', to);
 }
-// qrcode-generator (MIT): QR codes for the "Watch on my phone" window, a classic script at /vendor/qrcode/qrcode.js
+// qrcode-generator (MIT): QR codes in the "Watch from other devices" window, a classic script at /vendor/qrcode/qrcode.js
 {
   const to = path.join(__dirname, '..', 'vendor', 'qrcode');
   fs.rmSync(to, { recursive: true, force: true }); fs.mkdirSync(to, { recursive: true });
@@ -32,4 +32,12 @@ for (const pkg of ['three-mesh-bvh', 'three-bvh-csg']) {
   fs.copyFileSync(path.join(nm, 'addon-fit', 'lib', 'addon-fit.js'), path.join(to, 'addon-fit.js'));
   fs.copyFileSync(path.join(nm, 'xterm', 'LICENSE'), path.join(to, 'LICENSE'));
   console.log('xterm vendored to', to);
+}
+// the shared AI panel (github.com/Marty-s-Stuff/ai-panel, the tag in package.json): its page files at /vendor/ai-panel/
+// (its engine, node/aipanel.js, and built-in plugins are used straight from node_modules by main.js; xterm stays ours above)
+{
+  const to = path.join(__dirname, '..', 'vendor', 'ai-panel'), from = path.join(__dirname, '..', 'node_modules', 'ai-panel');
+  fs.rmSync(to, { recursive: true, force: true }); fs.mkdirSync(to, { recursive: true });
+  for (const f of ['ai-panel.html', 'ai-panel.css', 'ai-panel.js']) fs.copyFileSync(path.join(from, f), path.join(to, f));
+  console.log('ai-panel vendored to', to);
 }

@@ -1,0 +1,14 @@
+{
+  "name": "Simple GLB Editor",
+  "command": ["node", "scripts/selftest.mjs"],
+  "parts": [
+    {"name": "model editing", "about": "loading, rigging, posing, points, clean-up, saving, undo"},
+    {"name": "build mode", "about": "building from blocks: shapes, groups, joints, layers, frames, make model"},
+    {"name": "big files", "about": "the big toon models in the Library (skipped if they are not there)", "heavy": true, "minutes": 5},
+    {"name": "tabs and sessions", "about": "tabs, unsaved dots, a Claude session in its own tab, sub-tabs"},
+    {"name": "sprites and build extras", "about": "sprite sheets, hollow, band paint, side sizes, snapshots"},
+    {"name": "AI panel", "about": "the Claude plugin and the in-app terminal's answer buttons"},
+    {"name": "render and memory", "about": "drawing speed and memory use"},
+    {"name": "watch page security", "about": "who can open the watch page: this PC, home network, password, no file leaks"}
+  ]
+}

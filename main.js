@@ -3,7 +3,7 @@
 const { app, BrowserWindow, Menu, dialog, shell, nativeTheme, ipcMain } = require('electron');
 const fs = require('fs');
 const path = require('path');
-const { startServer, startWatchServer } = require('./server');
+const { startServer, startWatchServer, hashWatchPassword, watchViewerCount, readSettingsFile, mergeSettingsFile, MODEL_EXT } = require('./server');
 const os = require('os');
 const http = require('http');
 const crypto = require('crypto');
@@ -25,7 +25,7 @@ function defaultLibrary() {
 }
 
 // A .glb passed on the command line (drag onto the exe / "Open with").
-const openArg = process.argv.slice(1).find(a => /\.(glb|gltf|bbmodel)$/i.test(a) && fs.existsSync(a));
+const openArg = process.argv.slice(1).find(a => MODEL_EXT.test(a) && fs.existsSync(a));
 
 // --hidden: no visible window (for automation / the MCP server); everything else works the same.
 const hidden = process.argv.includes('--hidden');
@@ -41,19 +41,21 @@ else if (!hidden) app.on('second-instance', (_e, argv) => {
   if (!win) return;
   if (win.isMinimized()) win.restore();
   win.show(); win.focus();
-  const f = argv.slice(1).find(a => /\.(glb|gltf|bbmodel)$/i.test(a) && fs.existsSync(a));
+  const f = argv.slice(1).find(a => MODEL_EXT.test(a) && fs.existsSync(a));
   if (f) win.webContents.executeJavaScript(`window.openPathInTab && window.openPathInTab(${JSON.stringify(path.resolve(f))})`).catch(() => {});
 });
 
 const act = id => win && win.webContents.executeJavaScript(`window.glbAction && window.glbAction(${JSON.stringify(id)})`).catch(() => {});
 
+// The menu line in the page (under the logo row, ui.js) is drawn from this list; there is no Windows menu bar.
+// Items with an id run that editor action (so shortcuts and the session-tab lock apply); `run` = something only main.js can do.
 // No accelerators on purpose: every shortcut lives in the editor and can be rebound there (Keys…).
-function buildMenu() {
-  const item = (label, id) => ({ label, click: () => act(id) });
+function menuTemplate() {
+  const item = (label, id) => ({ label, id });
   const sep = { type: 'separator' };
-  return Menu.buildFromTemplate([
+  return [
     { label: 'File', submenu: [item('New tab', 'tabNew'), item('Close this tab', 'tabClose'), item('Open the picked group in a sub-tab', 'subTab'), item('New project (clear this tab)', 'newProject'), sep, item('Save into the library', 'save'), item('Save a copy as…', 'download'), sep, item('Open model…', 'open'), item('Export a sprite sheet…', 'spriteSheet'), item('Import a Blockbench model…', 'importBlockbench'), item('Open the model library', 'library'), item('Load the test dummy', 'dummy'), sep,
-      item('Save into the library', 'save'), item('Save a copy as…', 'download'), sep, { label: 'Quit', click: () => app.quit() }] },
+      { label: 'Quit', run: 'quit' }] },
     { label: 'Edit', submenu: [item('Undo', 'undo'), item('Redo', 'redo'), sep, item('Clean up the model…', 'cleanup'), sep, item('Select everything', 'selectAll'), item('Clear selection', 'deselect'), sep,
       item('Keyboard shortcuts…', 'keys')] },
     { label: 'Mode', submenu: [item('Object', 'modeObject'), item('Vertex (points)', 'modeVertex'), item('Edge (lines)', 'modeEdge'), item('Bone (skeleton)', 'modeBone'),
@@ -67,37 +69,49 @@ function buildMenu() {
     { label: 'View', submenu: [item('Frame selection', 'frame'), item('Front view', 'viewFront'), item('Side view', 'viewSide'), item('Top view', 'viewTop'), item('3D view', 'viewPersp'), sep,
       item('Show / hide Tools window', 'panelTools'), item('Show / hide Scene window', 'panelScene'), item('Show / hide Animations window', 'panelClips'),
       item('Put all windows back in place', 'resetLayout'), item('Arrange the buttons…', 'arrangeButtons'), sep,
-      { label: 'Theme', submenu: [['Dark', 'dark', 'themeDark'], ['Light', 'light', 'themeLight'], ['Like Windows (light or dark)', 'system', 'themeSystem']].map(([label, v, id]) => ({ label, type: 'radio', checked: (readSettings().theme || 'dark') === v, click: () => act(id) })) }, sep,
-      { label: 'Watch in a browser (view only)…', click: () => openWatch() },
-      item('Watch on my phone (QR code)…', 'watchPhone'), item('Claude Code terminal', 'claudeTerm'), { label: 'Notify me when Claude finishes', type: 'checkbox', checked: readSettings().notify !== false, click: () => act('notifyToggle') },
-      { label: 'Let phones / tablets on my Wi-Fi watch', type: 'checkbox', checked: !!readSettings().watchLan, click: m => setWatchLan(m.checked) }, sep,
-      { label: 'Toggle full screen', role: 'togglefullscreen', accelerator: '' }, { label: 'Developer tools', role: 'toggleDevTools', accelerator: '' }] },
+      { label: 'Theme', submenu: [['Dark', 'dark', 'themeDark'], ['Light', 'light', 'themeLight'], ['Like Windows (light or dark)', 'system', 'themeSystem']].map(([label, v, id]) => ({ label, id, type: 'radio', checked: (readSettings().theme || 'dark') === v })) }, sep,
+      { label: 'Watch in a browser (view only)…', run: 'watch' },
+      item('Watch from other devices…', 'watchPhone'), item('Claude Code terminal', 'claudeTerm'), { label: 'Notify me when Claude finishes', id: 'notifyToggle', type: 'checkbox', checked: readSettings().notify !== false },
+      { label: 'Let other devices watch (home Wi-Fi: no password)', run: 'watchLan', type: 'checkbox', checked: !!readSettings().watchLan }, sep,
+      { label: 'Toggle full screen', run: 'full' }, { label: 'Developer tools', run: 'devtools' }] },
     { label: 'Help', submenu: [item('How to use the editor', 'help'), item('Keyboard shortcuts…', 'keys')] },
-  ]);
+  ];
 }
 
 // ---- Watch: a read-only web page showing what the editor shows, with its own camera (see server.js startWatchServer)
 const settingsPath = () => path.join(app.getPath('userData'), 'settings.json');
-const readSettings = () => { try { return JSON.parse(fs.readFileSync(settingsPath(), 'utf8')); } catch { return {}; } };
-const writeSettings = patch => { const s = { ...readSettings(), ...patch }; fs.mkdirSync(path.dirname(settingsPath()), { recursive: true }); fs.writeFileSync(settingsPath(), JSON.stringify(s, null, 2)); return s; };
+const readSettings = () => readSettingsFile(settingsPath());
+const writeSettings = patch => mergeSettingsFile(settingsPath(), patch);
 let watchSrv = null;
+// The watch password (for devices outside the home network) lives in its own file, never in settings.json (the editor page
+// rewrites that): {salt, hash} = scrypt, secret = signs the sign-in cookies (new password = new secret = everyone signed out).
+const authPath = () => path.join(app.getPath('userData'), 'watch-auth.json');
+let watchAuth = (() => { try { const a = JSON.parse(fs.readFileSync(authPath(), 'utf8')); return a.hash && a.salt && a.secret ? a : null; } catch { return null; } })();
+function setWatchPassword(pw) {
+  if (pw == null || pw === '') { watchAuth = null; try { fs.unlinkSync(authPath()); } catch {} return { hasPassword: false }; }
+  if (String(pw).length < 6) return { error: 'Use at least 6 characters.', hasPassword: !!watchAuth };
+  watchAuth = { ...hashWatchPassword(pw), secret: crypto.randomBytes(32).toString('hex') };
+  if (/^\d+$/.test(String(pw))) watchAuth.pin = String(pw).length; // all digits = the sign-in page shows a number pad and goes on its own
+  fs.mkdirSync(path.dirname(authPath()), { recursive: true }); fs.writeFileSync(authPath(), JSON.stringify(watchAuth, null, 2));
+  return { hasPassword: true };
+}
 async function startWatch() {
-  const s = readSettings(), lan = !!s.watchLan;
-  let token = s.watchToken; if (lan && !token) token = writeSettings({ watchToken: require('crypto').randomBytes(9).toString('base64url') }).watchToken;
-  if (watchSrv) { try { watchSrv.server.close(); } catch {} watchSrv = null; }
-  for (const port of [5180, 0]) { try { watchSrv = await startWatchServer({ port, host: lan ? '0.0.0.0' : '127.0.0.1', token: lan ? token : '' }); watchSrv.token = lan ? token : ''; watchSrv.lan = lan; break; } catch {} }
+  const lan = !!readSettings().watchLan;
+  if (watchSrv) { try { watchSrv.server.close(); watchSrv.server.closeAllConnections(); } catch {} watchSrv = null; }
+  for (const port of [5180, 0]) { try { watchSrv = await startWatchServer({ port, host: lan ? '0.0.0.0' : '127.0.0.1', auth: { get: () => watchAuth } }); watchSrv.lan = lan; break; } catch {} }
 }
 const lanAddresses = () => Object.values(os.networkInterfaces()).flat().filter(a => a && a.family === 'IPv4' && !a.internal).map(a => a.address);
-const watchUrls = () => { if (!watchSrv) return []; const k = watchSrv.token ? `/?k=${watchSrv.token}` : '/'; return [`http://127.0.0.1:${watchSrv.port}${k}`, ...(watchSrv.lan ? lanAddresses().map(ip => `http://${ip}:${watchSrv.port}${k}`) : [])]; };
+const watchUrls = () => { if (!watchSrv) return []; return [`http://127.0.0.1:${watchSrv.port}/`, ...(watchSrv.lan ? lanAddresses().map(ip => `http://${ip}:${watchSrv.port}/`) : [])]; };
+const watchInfo = () => ({ lan: !!watchSrv?.lan, urls: watchUrls(), port: watchSrv?.port, hasPassword: !!watchAuth });
 async function openWatch() {
   if (!watchSrv) await startWatch();
   const urls = watchUrls(); if (!urls.length) return dialog.showMessageBox(win, { message: 'The watch page could not start.' });
   shell.openExternal(urls[0]);
-  if (watchSrv.lan) dialog.showMessageBox(win, { title: 'Watch from another device', message: 'Open one of these links on a phone or tablet on the same Wi-Fi (the key in the link is required):', detail: urls.slice(1).join('\n') || '(no network address found)' });
+  if (watchSrv.lan) act('watchPhone'); // the window with the links for other devices
 }
 async function setWatchLan(on) {
   writeSettings({ watchLan: !!on }); await startWatch();
-  if (on) act('watchPhone'); // the QR code window: scan instead of typing
+  if (on) act('watchPhone');
 }
 
 app.whenReady().then(async () => {
@@ -106,19 +120,21 @@ app.whenReady().then(async () => {
     port: 0, host: '127.0.0.1',
     libraryRoot: defaultLibrary(),
     settingsFile: path.join(app.getPath('userData'), 'settings.json'),
+    aiPanelDir: aiBoot.dir, // the panel's page files come from the copy its engine runs from
     hooks: {
       trash: p => shell.trashItem(p),
       reveal: p => (fs.statSync(p).isDirectory() ? shell.openPath(p) : shell.showItemInFolder(p)),
-      theme: mode => { nativeTheme.themeSource = ['light', 'dark', 'system'].includes(mode) ? mode : 'dark'; Menu.setApplicationMenu(buildMenu()); },
-      watchLinks: async () => { if (!watchSrv) await startWatch(); return { lan: !!watchSrv?.lan, urls: watchUrls() }; },
-      watchLan: async on => { writeSettings({ watchLan: !!on }); await startWatch(); Menu.setApplicationMenu(buildMenu()); return { lan: !!watchSrv?.lan, urls: watchUrls() }; },
+      theme: mode => { nativeTheme.themeSource = ['light', 'dark', 'system'].includes(mode) ? mode : 'dark'; },
+      watchLinks: async () => { if (!watchSrv) await startWatch(); return watchInfo(); },
+      watchPassword: async pw => ({ ...watchInfo(), ...setWatchPassword(pw) }),
+      watchLan: async on => { writeSettings({ watchLan: !!on }); await startWatch(); return watchInfo(); },
       chooseRoot: async cur => {
         const r = await dialog.showOpenDialog(win, { title: 'Choose where your model library is kept', defaultPath: cur, properties: ['openDirectory', 'createDirectory'] });
         return r.canceled ? null : r.filePaths[0];
       },
     },
   });
-  Menu.setApplicationMenu(buildMenu());
+  Menu.setApplicationMenu(null); // the menu line is in the page (menuTemplate)
   const theme = readSettings().theme; nativeTheme.themeSource = ['light', 'system'].includes(theme) ? theme : 'dark'; // menus + title bar match the editor
   win = new BrowserWindow({
     width: 1500, height: 920, minWidth: 900, minHeight: 560,
@@ -129,6 +145,15 @@ app.whenReady().then(async () => {
   });
   startControl();
   startWatch();
+  // Someone watching (maybe from far away) while the window is minimized / the screen locked: Chromium would slow the editor's
+  // timers to once a minute and the watch page would stall. Run at full speed while any watch page is open.
+  let fullSpeed = hidden;
+  setInterval(() => {
+    if (!win || win.isDestroyed() || hidden) return;
+    const want = watchViewerCount() > 0; if (want === fullSpeed) return;
+    fullSpeed = want; win.webContents.setBackgroundThrottling(!want);
+    if (want) win.webContents.executeJavaScript('window.watchKick && window.watchKick()').catch(() => {});
+  }, 1000).unref();
   const q = openArg ? '?open=' + encodeURIComponent(path.resolve(openArg)) : '';
   win.loadURL(`http://127.0.0.1:${port}/${q}${hidden ? (q ? '&' : '?') + 'hidden' : ''}`);
   // Downloads ("Save a copy as…"): always ask where.
@@ -142,82 +167,23 @@ app.whenReady().then(async () => {
   if (process.env.SIMPLE_GLB_DEV) win.on('page-title-updated', e => { e.preventDefault(); win.setTitle('Simple GLB Editor'); }); // a test copy: easy to tell apart
 });
 
-// ---- AI assistant plugins + the in-app terminal. A plugin is a JSON file describing a command-line AI assistant (which
-// program, its chat / sign-in / sign-out / status commands, environment): built-in ones in <app>/agents (Claude Code
-// ships), user ones in <userData>/agents (a user file with the same id replaces the built-in one). The terminal panel
-// (src/terminal.js, xterm.js) shows it; the process runs here with node-pty (ConPTY). Only commands a plugin defines are
-// ever started, and sign-in is the assistant's own (browser) flow, so the editor never sees a password or key.
-let ptyLib = null; const terms = new Map(); let termSeq = 0;
-const agentDirs = () => [path.join(__dirname, 'agents'), path.join(app.getPath('userData'), 'agents')];
-function loadAgents() {
-  const out = new Map();
-  agentDirs().forEach((d, i) => {
-    let files = []; try { files = fs.readdirSync(d).filter(f => f.toLowerCase().endsWith('.json')); } catch {}
-    for (const f of files) {
-      try { const a = JSON.parse(fs.readFileSync(path.join(d, f), 'utf8')); if (!a.id || !a.find) continue; a.builtIn = i === 0; a.file = path.join(d, f); out.set(a.id, a); }
-      catch (e) { console.warn('AI plugin', f, 'skipped:', e.message); }
-    }
-  });
-  return out;
-}
-const agentById = id => { const all = loadAgents(); const a = all.get(id) || all.get('claude-code') || [...all.values()][0]; if (!a) throw new Error('No AI plugin found'); return a; };
-/** The assistant's program: the first `where <command>` hit, else the first listed path that exists (~ = home folder). */
-function findExe(a) {
-  for (const c of a.find.commands || []) {
-    try { const hit = require('child_process').execFileSync('where.exe', [c], { encoding: 'utf8', windowsHide: true }).split(/\r?\n/).map(x => x.trim()).find(l => /\.(exe|cmd|bat)$/i.test(l)); if (hit) return hit; } catch {}
-  }
-  for (const p of a.find.paths || []) { const full = p.replace(/^~(?=[\\/])/, os.homedir()); if (fs.existsSync(full)) return full; }
-  return null;
-}
-const fill = (a, args) => (args || []).map(x => String(x).replace(/\{panelNote\}/g, a.panelNote || ''));
-const plain = a => ({ id: a.id, name: a.name || a.id, program: a.program || a.name || a.id, icon: a.icon || '🤖', description: a.description || '', builtIn: !!a.builtIn,
-  installed: !!findExe(a), install: a.install || null, signIn: (a.signIn || []).map(x => ({ id: x.id, label: x.label, tip: x.tip || '' })), signOut: a.signOut ? { confirm: a.signOut.confirm || null } : null, hasStatus: !!a.status });
-ipcMain.handle('agents:list', () => [...loadAgents().values()].map(plain));
-ipcMain.handle('agents:openFolder', async () => { // "Add another assistant…": your plugins folder, with the how-to guide in it
-  const dir = agentDirs()[1]; fs.mkdirSync(dir, { recursive: true });
-  const guide = path.join(dir, 'README.md'); if (!fs.existsSync(guide)) try { fs.copyFileSync(path.join(agentDirs()[0], 'README.md'), guide); } catch {}
-  await shell.openPath(dir); return dir;
-});
-ipcMain.handle('term:info', (_e, id) => plain(agentById(id)));
-ipcMain.handle('term:pickFolder', async (_e, start) => { const r = await dialog.showOpenDialog(win, { title: 'Where should the AI assistant work?', defaultPath: start || undefined, properties: ['openDirectory'] }); return r.canceled ? null : r.filePaths[0]; });
-ipcMain.handle('term:folderExists', (_e, p) => { try { return fs.statSync(p).isDirectory(); } catch { return false; } });
+// ---- the AI panel's engine: the shared github.com/Marty-s-Stuff/ai-panel (version = its tag in package.json). It runs the
+// picked command-line AI assistant (plugins: its built-in ones, %APPDATA%\ai-agents, the old <userData>\agents) with node-pty;
+// src/ui.js shows it through preload.js (window.glbTerm). GLB_SESSION_NAME names the assistant's tab in mcp/server.mjs.
+// From v1.2.0 the panel can update itself (▾ menu: Install / Not now / Skip; used from the next start): aiBoot picks the copy,
+// the built-in one or a newer 1.x the user installed into <userData>i-panel. The page's panel files come from the same copy (server.js aiPanelDir).
+const aiBoot = require('ai-panel/node/boot.js').createBoot({ updateDir: path.join(app.getPath('userData'), 'ai-panel') });
+require(path.join(aiBoot.dir, 'node', 'aipanel.js')).setup({ ipcMain, app, shell, dialog, getWin: () => win, appName: 'Simple GLB Editor', sessionVar: 'GLB_SESSION_NAME',
+  boot: aiBoot, pty: require('node-pty'), extraDirs: [path.join(app.getPath('userData'), 'agents')] }); // (a test copy with SIMPLE_GLB_USERDATA keeps its own plugins folder)
+ipcMain.handle('menu:get', () => menuTemplate());
+ipcMain.on('menu:run', (_e, what, checked) => ({ quit: () => app.quit(), watch: () => openWatch(), watchLan: () => setWatchLan(checked),
+  full: () => win?.setFullScreen(!win.isFullScreen()), devtools: () => win?.webContents.toggleDevTools() })[what]?.());
 ipcMain.on('win:focus', () => { if (!win) return; if (win.isMinimized()) win.restore(); win.show(); win.focus(); });
 app.setAppUserModelId('local.simple-glb-editor'); // Windows shows the editor's notifications as its own toasts
-const pick = (o, dotted) => String(dotted || '').split('.').reduce((v, k) => (v == null ? v : v[k]), o);
-ipcMain.handle('term:status', (_e, id) => new Promise(resolve => {
-  const a = agentById(id), exe = findExe(a); if (!exe) return resolve({ installed: false, loggedIn: false });
-  if (!a.status) return resolve({ installed: true, loggedIn: null });
-  require('child_process').execFile(exe, fill(a, a.status.args), { timeout: 20000, windowsHide: true, env: cleanEnv(a) }, (err, out) => {
-    try { const j = JSON.parse(out), m = a.status.json || {}, raw = pick(j, m.method); resolve({ installed: true, loggedIn: !!pick(j, m.loggedIn), method: raw ? (a.status.methods || {})[raw] || raw : null }); }
-    catch { resolve({ installed: true, loggedIn: false, error: String(err?.message || 'no answer') }); }
-  });
-}));
-/** The environment for the assistant: this app's, minus what the plugin drops (e.g. markers of a session that opened the editor), plus its own. */
-function cleanEnv(a) {
-  const drop = (a.dropEnv || []).map(r => new RegExp(r, 'i'));
-  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !drop.some(r => r.test(k))));
-  return Object.assign(env, { TERM: 'xterm-256color', COLORTERM: 'truecolor' }, a.env || {});
-}
-/** kind: 'chat' | 'signin' (with signInId) | 'signout' | 'version' — the args come from the plugin, never from the page. */
-ipcMain.handle('term:start', (e, { agent, kind = 'chat', signInId, cwd, cols = 100, rows = 30 } = {}) => {
-  const a = agentById(agent), exe = findExe(a); if (!exe) throw new Error((a.program || a.name) + ' is not installed');
-  const spec = kind === 'chat' ? a.chat : kind === 'version' ? a.version : kind === 'signout' ? a.signOut : kind === 'signin' ? (a.signIn || []).find(x => x.id === signInId) : null;
-  if (!spec) throw new Error(`${a.name} has no "${kind}" command`);
-  ptyLib ||= require('node-pty');
-  const p = ptyLib.spawn(exe, fill(a, spec.args), { name: 'xterm-256color', cols, rows, cwd: cwd && fs.existsSync(cwd) ? cwd : os.homedir(), env: cleanEnv(a) });
-  const id = ++termSeq, wc = e.sender; terms.set(id, p);
-  p.onData(d => { if (!wc.isDestroyed()) wc.send('term:data', id, d); });
-  p.onExit(({ exitCode }) => { terms.delete(id); if (!wc.isDestroyed()) wc.send('term:exit', id, exitCode); });
-  return id;
-});
-ipcMain.on('term:write', (_e, id, d) => { try { terms.get(id)?.write(d); } catch {} });
-ipcMain.on('term:resize', (_e, id, c, r) => { try { if (c > 1 && r > 1) terms.get(id)?.resize(c, r); } catch {} });
-ipcMain.on('term:kill', (_e, id) => { try { terms.get(id)?.kill(); } catch {} });
-app.on('will-quit', () => { for (const p of terms.values()) try { p.kill(); } catch {} });
 
 // ---- Automation control (used by mcp/server.mjs): POST /run {code} runs an async JS body in the window with
 // `editor` and `glbAction` in scope and returns {ok, value} or {ok:false, error}. Only on 127.0.0.1, and only with the
-// random token written to <userData>/control.json (readable by this Windows user only).
+// random token written to <userData>/control/<pid>.json (readable by this Windows user only).
 const controlFile = () => path.join(app.getPath('userData'), 'control.json');
 function startControl() {
   const token = crypto.randomBytes(24).toString('hex');
@@ -236,7 +202,7 @@ function startControl() {
         for (let i = 0; i < 400 && !(window.editor && window.glbAction); i++) await new Promise(r => setTimeout(r, 25));
         try {
           // a session ({id, name?, tab?}) works in its own tab, in the background; without one, in the tab you are looking at
-          const S = ${JSON.stringify(session && typeof session === 'object' ? session : null)}, T = S && window.tabs ? window.tabs.sessionTab(S) : null;
+          const S = ${JSON.stringify(session && typeof session === 'object' ? session : null)}, T = S && window.tabs && !S.noTab ? window.tabs.sessionTab(S) : null;
           const editor = T ? T.ed : window.editor, glbAction = T ? (id => window.glbActionIn(T, id)) : window.glbAction, THREE = editor && editor.THREE;
           const value = await (async () => { ${code}
  })();

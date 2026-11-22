@@ -41,8 +41,15 @@ export class Tabs extends EventTarget {
       const x = e.target.closest('[data-tabclose]'); if (x) { this.close(this.byId(+x.dataset.tabclose)); return; }
       if (e.target.closest('[data-newtab]')) { this.add(); return; }
       const dot = e.target.closest('[data-tabcolour]'); if (dot && this.showMenu) { const r = dot.getBoundingClientRect(); this.tabMenu(this.byId(+dot.dataset.tabcolour), r.left, r.bottom + 4); return; }
-      const t = e.target.closest('[data-tab]'); if (t) this.select(this.byId(+t.dataset.tab));
     });
+    // pick a tab on mouse DOWN (like browser tabs): busy sessions re-draw the bar many times a second, and a click whose
+    // down and up land on two different drawings of the same tab never arrives. No re-draw while a button is held on the bar.
+    bar.addEventListener('pointerdown', e => {
+      if (e.button !== 0 || e.target.closest('[data-tabclose],[data-newtab],[data-tabcolour]')) { this._barHeld = true; return; }
+      const t = e.target.closest('[data-tab]'); if (t) this.select(this.byId(+t.dataset.tab));
+      this._barHeld = true;
+    });
+    addEventListener('pointerup', () => { if (this._barHeld) { this._barHeld = false; if (this._barStale) this.renderBar(); } }, true);
     bar.addEventListener('contextmenu', e => { const el = e.target.closest('[data-tab]'); if (!el || !this.showMenu) return; e.preventDefault(); this.tabMenu(this.byId(+el.dataset.tab), e.clientX, e.clientY); });
     bar.addEventListener('auxclick', e => { const t = e.target.closest('[data-tab]'); if (e.button === 1 && t) { e.preventDefault(); this.close(this.byId(+t.dataset.tab)); } }); // middle-click closes
   }
@@ -61,7 +68,7 @@ export class Tabs extends EventTarget {
     const saved = rel => { if (!rel) return; opened(rel); self.lastSave.set(key(rel), { t: Date.now(), tab: t }); };
     const load = e.load; e.load = async (...a) => { const r = await load.apply(e, a); opened(e.libRel); return r; };
     const save = e.save; e.save = async (name = e.fileName, dir) => {
-      const d = dir === undefined ? (e.libRel && e.libRel.includes('/') ? e.libRel.slice(0, e.libRel.lastIndexOf('/')) : (e.libDir || '')) : dir;
+      const d = dir === undefined ? e._saveDir() : dir;
       check((d ? d + '/' : '') + (/\.glb$/i.test(name) ? name : name + '.glb'));
       const r = await save.call(e, name, dir); saved(e.libRel); return r;
     };
@@ -159,13 +166,35 @@ export class Tabs extends EventTarget {
       const reuse = this.hiddenApp && this.list.length === 1 && this.pristine(this.list[0]) && !this.list[0].session; // an editor started just for automation
       t = reuse ? this.list[0] : this.add({ activate: !!S.inApp }); // the in-app Claude's tab opens in front: you are chatting with it
       t.session = { ids: new Set([S.id]), name: S.tab || S.name || 'Claude ' + ++this.sessionCount, takenOver: false };
+      const sib = this.list.find(x => x !== t && x.color && x.session?.by?.has(S.id)); // a session's tabs share its colour
+      if (!t.color && sib) t.color = sib.color;
       if (!t.color) { const used = new Set(this.list.map(x => x.color)), all = Object.values(TAB_COLOURS).slice(1); t.color = all.find(c => !used.has(c)) || all[this.sessionCount % all.length]; } // its own colour
       this.applyViewOnly();
     }
+    (t.session.by ||= new Set()).add(S.id); // every session that worked here (it may close the tab later)
     if (t.session.takenOver) throw new Error(`The user took over the tab “${this.label(t)}”, so you can't change it now. Ask them, or work in another tab: glb_start {tab:"new name"}.`);
     t.session.last = Date.now(); t.session.steps = (t.session.steps || 0) + 1; if (S.inApp) t.session.inApp = true;
     this.queueBar(); if (t === this.active) this.renderBanner();
     return t;
+  }
+  /** The tabs a session opened or worked in: [{name, current, unsaved, file, takenOver}]. */
+  sessionTabs(S) {
+    return this.list.filter(x => !x.parent && x.session?.by?.has(S.id)).map(x => ({
+      name: x.session.name, current: x.session.ids.has(S.id), unsaved: this.dirty(x), takenOver: !!x.session.takenOver,
+      file: x.ed.mode === 'build' ? x.ed.build?.libRel || null : x.ed.libRel || null }));
+  }
+  /** A session closes its own tabs (names, or 'all'); never asks the user: unsaved tabs are kept unless force. */
+  closeSessionTabs(S, names = 'all', force = false) {
+    const mine = this.list.filter(x => !x.parent && x.session?.by?.has(S.id)), want = names === 'all' ? null : [].concat(names).map(String);
+    const closed = [], kept = [];
+    for (const n of want || []) if (!mine.some(x => x.session.name === n || this.title(x) === n)) kept.push({ name: n, why: 'not one of your tabs' });
+    for (const x of mine) {
+      const name = x.session.name; if (want && !want.includes(name) && !want.includes(this.title(x))) continue;
+      if (x.session.takenOver) { kept.push({ name, why: 'the user took it over' }); continue; }
+      if (this.dirty(x) && !force) { kept.push({ name, why: 'not saved (save it first, or force:true to drop the changes)' }); continue; }
+      const ids = [...x.session.ids]; this.close(x, { force: true }); ids.forEach(id => id === S.id && this.closedSessions.delete(id)); closed.push(name);
+    }
+    return { closed, kept };
   }
   /** Run fn with the stand-in `editor` / `build` pointing at tab t (menu commands a session runs in its tab). */
   runIn(t, fn) { const prev = this.forced; this.forced = t; try { return fn(); } finally { this.forced = prev; } }
@@ -246,7 +275,9 @@ export class Tabs extends EventTarget {
 
   queueBar() { if (this._barQueued) return; this._barQueued = true; requestAnimationFrame(() => { this._barQueued = false; this.renderBar(); this.save(); }); }
   renderBar() {
-    this.bar.innerHTML = this.list.map((t, i) => {
+    if (this._barHeld) { this._barStale = true; return; } // (drawn on pointer-up)
+    this._barStale = false;
+    const html = this.list.map((t, i) => {
       const name = this.label(t), d = this.dirty(t), key = i < 9 ? ` (Ctrl+${i + 1})` : '', s = t.session, busy = s && !s.takenOver && Date.now() - (s.last || 0) < 4000;
       const c = this.colourOf(t);
       return `<div style="${c ? `--c:${c}` : ''}" class="tab${t === this.active ? ' on' : ''}${t.parent ? ' sub' : ''}${s ? ' claude' : ''}${busy ? ' busy' : ''}" data-tab="${t.id}" title="${esc(name)}${d ? ' — not saved' : ''}${key}${s ? (s.takenOver ? '\nA Claude session worked here; you took it over.' : '\nA Claude session works in this tab; you can watch, or Take over to edit.') : ''}\nClick to switch to it; middle-click or ✕ closes it.">` +
@@ -254,6 +285,7 @@ export class Tabs extends EventTarget {
         `<span class="tab-name">${s ? (s.takenOver ? '✋ ' : '🤖 ') : ''}${t.ed.mode === 'build' ? '🧱 ' : ''}${esc(name)}</span>${d ? '<span class="tab-dirty" title="Not saved">●</span>' : ''}` +
         `<button class="tab-x" data-tabclose="${t.id}" title="Close this tab (Ctrl+W). Asks first if it is not saved.">✕</button></div>`;
     }).join('') + `<button class="tab-new" data-newtab title="Open a new empty tab (Ctrl+T).">+</button>`;
+    if (html !== this._barHtml) { this._barHtml = html; this.bar.innerHTML = html; } // unchanged = leave the elements alone
   }
 
   /** Remember the tabs that are saved in the library, to reopen them next time. */

@@ -20,7 +20,7 @@ function sampleSurface(ed, count = 40000) {
       const A = V(w[a * 3], w[a * 3 + 1], w[a * 3 + 2]), B = V(w[b * 3], w[b * 3 + 1], w[b * 3 + 2]), C = V(w[c * 3], w[c * 3 + 1], w[c * 3 + 2]);
       const area = new THREE.Vector3().subVectors(B, A).cross(new THREE.Vector3().subVectors(C, A)).length() / 2;
       if (area > 0) { tris.push({ A, B, C, area }); total += area; }
-      }
+    }
   }
   const out = [];
   let seed = 12345; const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
@@ -191,11 +191,10 @@ export function fitSkeleton(ed) {
   ];
   for (const [s, sg] of [['L', 1], ['R', -1]]) {
     const a = L['arm' + s], f = L['foot' + s];
-    const local = v => ({ x: v.x, y: v.y, z: v.z });
     defs.push(
       [`Shoulder_${s}`, 'Chest', { x: sg * 0.03 * H, y: L.shoulderY - 0.01 * H, z: sz }],
-      [`UpperArm_${s}`, `Shoulder_${s}`, local(a.shoulder)], [`LowerArm_${s}`, `UpperArm_${s}`, local(a.elbow)],
-      [`Hand_${s}`, `LowerArm_${s}`, local(a.wrist)], [`HandEnd_${s}`, `Hand_${s}`, local(a.tip)],
+      [`UpperArm_${s}`, `Shoulder_${s}`, a.shoulder], [`LowerArm_${s}`, `UpperArm_${s}`, a.elbow],
+      [`Hand_${s}`, `LowerArm_${s}`, a.wrist], [`HandEnd_${s}`, `Hand_${s}`, a.tip],
       [`UpperLeg_${s}`, 'Hips', L['hip' + s]], [`LowerLeg_${s}`, `UpperLeg_${s}`, L['knee' + s]],
       [`Foot_${s}`, `LowerLeg_${s}`, f.ankle], [`Toe_${s}`, `Foot_${s}`, { x: f.x, y: 0.01 * H, z: f.toe }],
     );
@@ -223,18 +222,18 @@ export function surfaceWeights(t, bones, segs, H) {
     if (a !== b && b !== c && a !== c) tris.push({ a, b, c, A: pos(a), B: pos(b), C: pos(c) });
   }
   // faces sorted into a grid, so each look only tests the faces along its own path (fast on big models)
-  const grid = new TriGrid(tris, Math.min(96, Math.max(16, Math.round(Math.cbrt(tris.length) * 2))));
+  const grid = new TriGrid(tris);
   const dir = new THREE.Vector3();
   const sees = (i, p, q) => { // does the straight line from skin point p (id i) to bone point q stay inside?
     const len = dir.subVectors(q, p).length(); if (len < 1e-9) return true;
     dir.divideScalar(len);
     return !grid.hits(p, dir, len - 1e-6, k => { const T = tris[k]; return T.a !== i && T.b !== i && T.c !== i; }, 1e-6);
   };
+  const closestOn = (j, p) => { let d = Infinity, best = null; for (const e of segs[j].ends) { seg.set(segs[j].a, e); seg.closestPointToPoint(p, true, tmp); const dd = tmp.distanceTo(p); if (dd < d) { d = dd; best = tmp.clone(); } } return best; };
   for (let i = 0; i < P; i++) {
     const p = pos(i); const order = [];
     for (let j = 0; j < bones.length; j++) {
-      let d = Infinity, cq = null;
-      for (const e of segs[j].ends) { seg.set(segs[j].a, e); seg.closestPointToPoint(p, true, tmp); const dd = tmp.distanceTo(p); if (dd < d) { d = dd; cq = tmp.clone(); } }
+      const cq = closestOn(j, p), d = cq ? cq.distanceTo(p) : Infinity;
       eu[i * bones.length + j] = d; order.push([d, j, cq]);
     }
     order.sort((x, y) => x[0] - y[0]);
@@ -289,8 +288,7 @@ export function surfaceWeights(t, bones, segs, H) {
     let b0 = 0; for (let j = 1; j < bones.length; j++) if (g(j) < g(b0)) b0 = j;
     // closest along the surface, but it must also be able to see the point through the body (else try the next ones)
     const byG = bones.map((_, j) => j).sort((x, y) => g(x) - g(y)).slice(0, 5), p = pos(i);
-    const closestOn = j => { let d = Infinity, best = null; for (const e of segs[j].ends) { seg.set(segs[j].a, e); seg.closestPointToPoint(p, true, tmp); const dd = tmp.distanceTo(p); if (dd < d) { d = dd; best = tmp.clone(); } } return best; };
-    for (const j of byG) { if (g(j) > g(byG[0]) + 0.15 * H) break; if (sees(i, p, closestOn(j))) { b0 = j; break; } }
+    for (const j of byG) { if (g(j) > g(byG[0]) + 0.15 * H) break; if (sees(i, p, closestOn(j, p))) { b0 = j; break; } }
     const fam = new Set([b0]); if (parentOf[b0] >= 0) fam.add(parentOf[b0]);
     bones.forEach((b, j) => { if (parentOf[j] === b0) fam.add(j); });
     const cand = [...fam].map(j => [j, Math.exp(-(g(j) - g(b0)) / sigma)]).sort((a, b) => b[1] - a[1]).slice(0, 4);

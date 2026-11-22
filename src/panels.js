@@ -12,7 +12,7 @@ export class Panels {
     const saved = settings.get('panels', {});
     this.state = {};
     for (const [id, d] of Object.entries(defs)) {
-      this.state[id] = { dock: d.dock, open: d.open, x: null, y: 100, w: d.w || 320, h: d.h || 420, ...(saved[id] || {}) };
+      this.state[id] = { ...this._defaultState(d), ...(saved[id] || {}) };
       this._build(id);
     }
     const dockW = settings.get('dockWidths', {});
@@ -24,6 +24,7 @@ export class Panels {
   el(id) { return document.querySelector(`.panel[data-panel="${id}"]`); }
   isOpen(id) { return this.state[id].open; }
   _save() { settings.set('panels', this.state); }
+  _defaultState(d) { return { dock: d.dock, open: d.open, x: null, y: 100, w: d.w || 320, h: d.h || 420 }; }
 
   _build(id) {
     const el = this.el(id), d = this.defs[id];
@@ -54,9 +55,7 @@ export class Panels {
       const s = this.state[id], el = this.el(id);
       el.hidden = !s.open;
       el.querySelector('.pop').textContent = s.dock ? '⇱' : '⇲';
-      if (s.dock) {
-        const dock = $(s.dock === 'left' ? '#dockLeft' : '#dockRight');
-        if (el.parentElement !== dock) dock.appendChild(el);
+      if (s.dock) { // (moved into its dock below, in the defined order)
         el.classList.remove('floating'); el.style.cssText = '';
         if (s.open) { if (s.dock === 'left') hasL = true; else hasR = true; }
       } else {
@@ -90,7 +89,7 @@ export class Panels {
   }
   dock(id, side) { const s = this.state[id]; s.dock = side; s.open = true; this.apply(); this._save(); }
   reset() {
-    for (const [id, d] of Object.entries(this.defs)) this.state[id] = { dock: d.dock, open: d.open, x: null, y: 100, w: d.w || 320, h: d.h || 420 };
+    for (const [id, d] of Object.entries(this.defs)) this.state[id] = this._defaultState(d);
     for (const side of ['left', 'right']) document.documentElement.style.removeProperty(`--dock-${side}`);
     settings.set('dockWidths', {});
     this.apply(); this._save();

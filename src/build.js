@@ -8,6 +8,7 @@
 // exactly like Blockbench: a group only adds its rotation around its pivot.
 import * as THREE from 'three';
 import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { eulerQ, pivotM, FACES, round4, planeCells } from './bbimport.js';
 
 const U = 1 / 16, D2R = Math.PI / 180, R2D = 180 / Math.PI;
 const SIDES = ['north', 'south', 'east', 'west', 'up', 'down'];
@@ -15,7 +16,7 @@ const SIDES = ['north', 'south', 'east', 'west', 'up', 'down'];
 export const SIDE_ALIAS = { front: 'south', back: 'north', left: 'east', right: 'west', top: 'up', bottom: 'down' };
 const NICE_SIDE = Object.fromEntries(Object.entries(SIDE_ALIAS).map(([k, v]) => [v, k]));
 export const sideName = s => (typeof s === 'string' && SIDE_ALIAS[s.toLowerCase()]) || s;
-const DIR = { north: [0, 0, -1], south: [0, 0, 1], east: [1, 0, 0], west: [-1, 0, 0], up: [0, 1, 0], down: [0, -1, 0] };
+const DIR = Object.fromEntries(Object.entries(FACES).map(([s, f]) => [s, f.n])); // outward normal of each side
 const OPP = { north: 'south', south: 'north', east: 'west', west: 'east', up: 'down', down: 'up' };
 export const SHAPES = {
   cube: { label: 'Cube', icon: '◼', help: 'A box. Stretch any side to make planks, walls, limbs.' },
@@ -30,9 +31,7 @@ export const SHAPES = {
 const r4 = v => Math.round(v * 1e4) / 1e4 + 0; // (+0 turns -0 into 0)
 const v3 = a => new THREE.Vector3(a[0], a[1], a[2]);
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2) + Date.now().toString(36));
-const eulerQ = r => new THREE.Quaternion().setFromEuler(new THREE.Euler((+r[0] || 0) * D2R, (+r[1] || 0) * D2R, (+r[2] || 0) * D2R, 'ZYX'));
 const qEuler = q => { const e = new THREE.Euler().setFromQuaternion(q, 'ZYX'); return [e.x, e.y, e.z].map(a => Math.round(a * R2D * 1000) / 1000 + 0); };
-const pivotM = (o, r) => new THREE.Matrix4().makeTranslation(o[0], o[1], o[2]).multiply(new THREE.Matrix4().makeRotationFromQuaternion(eulerQ(r))).multiply(new THREE.Matrix4().makeTranslation(-o[0], -o[1], -o[2]));
 const sideOf = n => { const a = [Math.abs(n.x), Math.abs(n.y), Math.abs(n.z)], i = a.indexOf(Math.max(...a)); return i === 0 ? (n.x > 0 ? 'east' : 'west') : i === 1 ? (n.y > 0 ? 'up' : 'down') : (n.z > 0 ? 'south' : 'north'); };
 const clone = o => JSON.parse(JSON.stringify(o));
 const hex = c => '#' + c.getHexString();
@@ -105,11 +104,7 @@ function partGeometry(p) {
 // ---------------------------------------------------------------- pixel paint on cube sides
 // part.pix = { north: { w, h, rgba: base64 of w*h*4 bytes }, ... }  — a side's own pixel grid. u, v = pixels from the
 // side's top-left as seen from outside (Blockbench's face orientation). Unpainted sides keep their flat colour.
-const FACE = { // unit-box corners TL, TR, BL of each side, seen from outside (same as Blockbench / bbimport)
-  north: [[1, 1, 0], [0, 1, 0], [1, 0, 0]], south: [[0, 1, 1], [1, 1, 1], [0, 0, 1]],
-  east: [[1, 1, 1], [1, 1, 0], [1, 0, 1]], west: [[0, 1, 0], [0, 1, 1], [0, 0, 0]],
-  up: [[0, 1, 0], [1, 1, 0], [0, 1, 1]], down: [[0, 0, 1], [1, 0, 1], [0, 0, 0]],
-};
+const FACE = Object.fromEntries(Object.entries(FACES).map(([s, f]) => [s, [f.c[0], f.c[1], f.c[3]]])); // unit-box corners TL, TR, BL of each side, seen from outside (bbimport's TL, TR, BR, BL)
 const faceAxes = side => { const [tl, tr, bl] = FACE[side].map(v3); return { tl, du: tr.clone().sub(tl), dv: bl.clone().sub(tl) }; };
 const faceDims = (p, side) => { const { du, dv } = faceAxes(side), size = p.to.map((t, i) => Math.abs(t - p.from[i])); const len = d => Math.abs(d.x) * size[0] + Math.abs(d.y) * size[1] + Math.abs(d.z) * size[2]; return [len(du), len(dv)]; };
 const b64 = u8 => { let s2 = ''; for (let i = 0; i < u8.length; i += 0x8000) s2 += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000)); return btoa(s2); };
@@ -172,7 +167,7 @@ const geoKey = p => [p.collider || '', p.shape, p.sides, (p.flip || []).join('')
  * rectangles per colour (only over visible cells, so nothing ends up inside). Returns [{P:[4 Vector3], color}].
  */
 function boxSurface(boxes) {
-  const R = v => Math.round(v * 1e4) / 1e4, planes = new Map(), out = [];
+  const R = round4, planes = new Map(), out = [];
   for (const bx of boxes) for (const side of SIDES) {
     const color = bx.colors[side]; if (!color) continue;
     const d = DIR[side], axis = d[0] ? 0 : d[1] ? 1 : 2, sign = d[axis], plane = R(sign > 0 ? bx.max[axis] : bx.min[axis]);
@@ -180,24 +175,8 @@ function boxSurface(boxes) {
     (planes.get(key) || planes.set(key, { axis, sign, plane, ua, va, rects: [] }).get(key)).rects.push([R(bx.min[ua]), R(bx.max[ua]), R(bx.min[va]), R(bx.max[va]), color]);
   }
   for (const pl of planes.values()) {
-    let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
-    for (const r of pl.rects) { u0 = Math.min(u0, r[0]); u1 = Math.max(u1, r[1]); v0 = Math.min(v0, r[2]); v1 = Math.max(v1, r[3]); }
-    const front = pl.plane + pl.sign * 1e-3, blockers = [];
-    for (const bx of boxes) {
-      if (bx.min[pl.axis] > front || bx.max[pl.axis] < front) continue;
-      const r = [Math.max(u0, R(bx.min[pl.ua])), Math.min(u1, R(bx.max[pl.ua])), Math.max(v0, R(bx.min[pl.va])), Math.min(v1, R(bx.max[pl.va]))];
-      if (r[0] < r[1] && r[2] < r[3]) blockers.push(r);
-    }
-    const all = pl.rects.concat(blockers);
-    const Us = [...new Set(all.flatMap(r => [r[0], r[1]]))].sort((a, c) => a - c), Vs = [...new Set(all.flatMap(r => [r[2], r[3]]))].sort((a, c) => a - c);
-    const ui = new Map(Us.map((v, i) => [v, i])), vi = new Map(Vs.map((v, i) => [v, i])), nu = Us.length - 1, nv = Vs.length - 1;
-    if (nu < 1 || nv < 1) continue;
-    const cols = [], colIdx = new Map(), cell = new Int32Array(nu * nv), DC = -1;
-    for (const r of pl.rects) {
-      let c = colIdx.get(r[4]); if (c === undefined) { c = cols.length + 1; cols.push(r[4]); colIdx.set(r[4], c); }
-      for (let j = vi.get(r[2]); j < vi.get(r[3]); j++) for (let i = ui.get(r[0]); i < ui.get(r[1]); i++) cell[j * nu + i] = c;
-    }
-    for (const r of blockers) for (let j = vi.get(r[2]); j < vi.get(r[3]); j++) for (let i = ui.get(r[0]); i < ui.get(r[1]); i++) cell[j * nu + i] = DC;
+    const pc = planeCells(pl, boxes); if (!pc) continue;
+    const { Us, Vs, nu, nv, cols, cell } = pc;
     const done = new Uint8Array(nu * nv);
     const corner = (u, v) => { const p = new THREE.Vector3(); p.setComponent(pl.axis, pl.plane); p.setComponent(pl.ua, u); p.setComponent(pl.va, v); return p; };
     for (let j = 0; j < nv; j++) for (let i = 0; i < nu; i++) {
@@ -205,8 +184,7 @@ function boxSurface(boxes) {
       const ok = k => cell[k] === c && !done[k]; // only visible cells: nothing may end up inside the solid
       let i1 = i; while (i1 + 1 < nu && ok(j * nu + i1 + 1)) i1++;
       let j1 = j; grow: while (j1 + 1 < nv) { for (let k = i; k <= i1; k++) if (!ok((j1 + 1) * nu + k)) break grow; j1++; }
-      const real = (ia, ib, ja, jb) => { for (let y = ja; y <= jb; y++) for (let x = ia; x <= ib; x++) if (cell[y * nu + x] === c) return true; return false; };
-      let ia = i; while (j1 > j && !real(ia, i1, j1, j1)) j1--; while (i1 > ia && !real(i1, i1, j, j1)) i1--;
+      const ia = i;
       for (let y = j; y <= j1; y++) for (let x = ia; x <= i1; x++) if (cell[y * nu + x] === c) done[y * nu + x] = 1;
       let P = [corner(Us[ia], Vs[j]), corner(Us[i1 + 1], Vs[j]), corner(Us[i1 + 1], Vs[j1 + 1]), corner(Us[ia], Vs[j1 + 1])];
       const nn = new THREE.Vector3().subVectors(P[1], P[0]).cross(new THREE.Vector3().subVectors(P[2], P[0]));
@@ -220,7 +198,7 @@ function boxSurface(boxes) {
 /** Triangles from boxSurface quads with no T-junctions (each quad fanned from its middle through every corner that
  * lies on its edges), so the result is a closed solid that a solid union can work with. */
 function watertight(quads) {
-  const R = v => Math.round(v * 1e4) / 1e4, lines = [new Map(), new Map(), new Map()]; // axis -> "other two coords" -> sorted positions
+  const R = round4, lines = [new Map(), new Map(), new Map()]; // axis -> "other two coords" -> sorted positions
   const add = p => { for (let a = 0; a < 3; a++) { const k = [0, 1, 2].filter(i => i !== a).map(i => R(p.getComponent(i))).join(','); const l = lines[a].get(k) || lines[a].set(k, new Set()).get(k); l.add(R(p.getComponent(a))); } };
   quads.forEach(q => q.P.forEach(add));
   for (const m of lines) for (const [k, set] of m) m.set(k, [...set].sort((x, y) => x - y));
@@ -279,10 +257,10 @@ function meshPartData(tris) {
 export function initBuild(ed, hooks = {}) {
   const b = {
     doc: null, sel: [], tool: 'move', gridStep: 1, rotStep: 22.5, color: '#c8a46e', active: false, dirty: false, clipboard: null, libRel: null,
-    snapMode: 'all',
-    pixelDensity: 2, // pixels per Blockbench unit for a side painted for the first time (1, 2 or 4)
+    snapMode: 'all', // moving parts click onto: 'all' = snap points + corners + middles of sides, 'points' = snap points only, 'off'
+    pixelDensity: 2, // pixels per Blockbench unit for a side painted for the first time (1, 2, 4 or 8)
     pixelBrush: { mode: 'pencil', size: 1, mirror: false, text: 'Text', textSize: 8, font: 'sans', bold: false }, // pencil | fill | erase | text
-    showColliders: true, // moving parts click onto: 'all' = snap points + corners + middles of sides, 'points' = snap points only, 'off'
+    showColliders: true,
   };
   const root = new THREE.Group(); root.name = '__build'; root.scale.setScalar(U); root.visible = false; ed.scene.add(root);
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0, flatShading: true });
@@ -369,8 +347,7 @@ export function initBuild(ed, hooks = {}) {
     const n = N(id);
     if (n.kind === 'locator') { n.position = n.position.map((v, i) => r4(v + d[i])); return; }
     n.origin = n.origin.map((v, i) => r4(v + d[i]));
-    if (n.kind === 'part') { n.from = n.from.map((v, i) => r4(v + d[i])); n.to = n.to.map((v, i) => r4(v + d[i])); }
-    else shift(id, d);
+    shift(id, d); // a part's box, or everything inside a group
   }
   /**
    * Give node a new local placement M (rotation + translation, in its parent's frame) while keeping its shape:
